@@ -1,0 +1,494 @@
+import "font.ttf";
+
+global SkeetTheme {
+    out property <color> bg: #0e0f12;
+    out property <color> window-border: #282a33;
+    out property <color> input-bg: #090a0d;
+    out property <color> input-border: #262833;
+    out property <color> item-hover: #191c24;
+
+    out property <color> green: #96db37;
+    out property <color> green-dim: #609121;
+    out property <color> green-bg: #12180d;
+    out property <color> green-border: #354e17;
+
+    out property <color> red: #e04343;
+    out property <color> red-bg: #1c0f10;
+    out property <color> red-border: #52191b;
+
+    out property <color> text: #dcdedf;
+    out property <color> text-muted: #8e929d;
+    out property <color> text-dim: #525663;
+}
+
+component SkeetButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> is-danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    background: !root.enabled ? #131419 : (
+        btn-touch.pressed ? #20232c : (
+        btn-touch.has-hover ? (root.primary ? #213312 : #1e2028) : (
+        root.primary ? SkeetTheme.green-bg : (root.is-danger ? SkeetTheme.red-bg : #16171e))));
+    border-width: 1px;
+    border-color: !root.enabled ? SkeetTheme.input-border : (
+        root.primary ? SkeetTheme.green-border : (root.is-danger ? SkeetTheme.red-border : SkeetTheme.input-border));
+
+    btn-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? SkeetTheme.text-dim : (
+            root.primary ? SkeetTheme.green : (root.is-danger ? SkeetTheme.red : SkeetTheme.text));
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "meowinjector";
+
+    width: 360px;
+    height: 290px;
+
+    background: SkeetTheme.bg;
+    default-font-family: "Verdana";
+
+    in property <[string]> process-names: [];
+    in property <[int]> process-pids: [];
+    in property <[string]> filtered-names: [];
+    in property <[int]> filtered-pids: [];
+    in property <[int]> filtered-indices: [];
+    in property <[image]> filtered-icons: [];
+
+    in-out property <string> game-status: "waiting!";
+    in-out property <bool> game-found: false;
+    in-out property <string> dll-hint: "no dll selected";
+    in-out property <string> dll-path: "";
+    in-out property <string> process-name: "";
+    in-out property <int> process-pid: 0;
+    in-out property <bool> inject-ready: false;
+    in-out property <string> status-text: "";
+    in-out property <bool> status-ok: true;
+    in-out property <bool> injecting: false;
+    in-out property <bool> mapping: false;
+    in-out property <bool> driver-ok: false;
+    in-out property <int> selected-index: -1;
+
+    in-out property <bool> dropdown-open: false;
+    in-out property <string> search-text: "";
+
+    callback inject-clicked();
+    callback browse-dll();
+    callback process-selected(int);
+    callback filter-processes(string);
+    callback refresh-processes();
+    callback map-driver();
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: 1px;
+        border-color: SkeetTheme.window-border;
+
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: 100%;
+            height: 2px;
+            background: @linear-gradient(90deg, #ff3b30 0%, #ff9500 16%, #ffcc00 33%, #96db37 50%, #00c7be 66%, #30b0c7 83%, #af52de 100%);
+        }
+
+        VerticalLayout {
+            padding: 14px;
+            padding-top: 12px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                height: 32px;
+                alignment: start;
+                spacing: 0px;
+
+                Text {
+                    text: "meow";
+                    color: #ffffff;
+                    font-size: 32px;
+                    font-family: "Cute Cat";
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: "injector";
+                    color: SkeetTheme.green;
+                    font-size: 32px;
+                    font-family: "Cute Cat";
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 24px;
+                background: root.driver-ok ? SkeetTheme.green-bg : SkeetTheme.red-bg;
+                border-width: 1px;
+                border-color: root.driver-ok ? SkeetTheme.green-border : SkeetTheme.red-border;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+
+                    Text {
+                        text: root.driver-ok ? "kernel driver loaded" : (
+                            root.mapping ? "mapping driver..." : "kernel driver unloaded");
+                        color: root.driver-ok ? SkeetTheme.green : SkeetTheme.red;
+                        font-size: 9px;
+                        font-weight: 700;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        vertical-stretch: 0;
+                    }
+
+                    if !root.driver-ok: Rectangle {
+                        height: 100%;
+                        vertical-stretch: 0;
+                        horizontal-stretch: 1;
+
+                        Rectangle {
+                            width: 40px;
+                            height: 16px;
+                            background: map-touch.pressed ? #2a1515 : (
+                                map-touch.has-hover ? #2a1a1a : SkeetTheme.red-bg);
+                            border-width: 1px;
+                            border-color: SkeetTheme.red-border;
+                            border-radius: 3px;
+                            y: (parent.height - self.height) / 2;
+                            x: parent.width - self.width;
+
+                            Text {
+                                text: root.mapping ? "..." : "MAP";
+                                color: SkeetTheme.red;
+                                font-size: 8px;
+                                font-weight: 700;
+                                letter-spacing: 0.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            map-touch := TouchArea {
+                                enabled: !root.mapping;
+                                clicked => { root.map-driver(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                Text {
+                    text: "process";
+                    color: SkeetTheme.text;
+                    font-size: 10px;
+                    font-weight: 700;
+                }
+
+                proc-box-anchor := Rectangle {
+                    height: 28px;
+                    background: SkeetTheme.input-bg;
+                    border-width: 1px;
+                    border-color: root.dropdown-open ? SkeetTheme.green : SkeetTheme.input-border;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+
+                        Text {
+                            text: ">";
+                            color: SkeetTheme.green;
+                            font-size: 11px;
+                            font-weight: 800;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+
+                            if !root.dropdown-open: Text {
+                                text: root.process-name != "" ? root.process-name + " (PID: " + root.process-pid + ")" : "Search process...";
+                                color: root.process-name != "" ? SkeetTheme.green : SkeetTheme.text-dim;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            proc-search-input := TextInput {
+                                visible: root.dropdown-open;
+                                text <=> root.search-text;
+                                font-size: 10px;
+                                color: SkeetTheme.text;
+                                vertical-alignment: center;
+                                single-line: true;
+                                width: 100%;
+                                height: 100%;
+
+                                edited => {
+                                    root.filter-processes(self.text);
+                                }
+
+                                accepted => {
+                                    if (root.filtered-names.length > 0) {
+                                        root.process-selected(root.filtered-indices[0]);
+                                        root.selected-index = root.filtered-indices[0];
+                                        root.game-found = true;
+                                        root.dropdown-open = false;
+                                        root.search-text = "";
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.dropdown-open ? "▲" : "▼";
+                            color: root.dropdown-open ? SkeetTheme.green : SkeetTheme.text-dim;
+                            font-size: 8px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            root.dropdown-open = !root.dropdown-open;
+                            if (root.dropdown-open) {
+                                proc-search-input.focus();
+                            }
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                Text {
+                    text: "dll";
+                    color: SkeetTheme.text;
+                    font-size: 10px;
+                    font-weight: 700;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    height: 28px;
+
+                    Rectangle {
+                        background: SkeetTheme.input-bg;
+                        border-width: 1px;
+                        border-color: SkeetTheme.input-border;
+                        horizontal-stretch: 1;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            Text {
+                                text: root.dll-hint;
+                                color: root.dll-path != "" ? SkeetTheme.green : SkeetTheme.text-dim;
+                                font-size: 10px;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    SkeetButton {
+                        width: 70px;
+                        text: "browse";
+                        clicked => { root.browse-dll(); }
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                height: 30px;
+
+                SkeetButton {
+                    horizontal-stretch: 2;
+                    text: root.injecting ? "INJECTING..." : "INJECT";
+                    primary: true;
+                    enabled: root.inject-ready && !root.injecting;
+                    clicked => { root.inject-clicked(); }
+                }
+            }
+
+            if root.status-text != "": Rectangle {
+                height: 22px;
+                background: root.status-ok ? SkeetTheme.green-bg : SkeetTheme.red-bg;
+                border-width: 1px;
+                border-color: root.status-ok ? SkeetTheme.green-border : SkeetTheme.red-border;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+
+                    Text {
+                        text: root.status-text;
+                        color: root.status-ok ? SkeetTheme.green : SkeetTheme.red;
+                        font-size: 9px;
+                        font-weight: 700;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.dropdown-open: TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.dropdown-open = false; }
+
+        Rectangle {
+            x: proc-box-anchor.absolute-position.x;
+            y: proc-box-anchor.absolute-position.y + proc-box-anchor.height + 1px;
+            width: proc-box-anchor.width;
+            height: min(root.filtered-names.length * 24px + 20px, root.height - self.y - 10px);
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.green-border;
+            clip: true;
+
+            VerticalLayout {
+                Rectangle {
+                    height: 18px;
+                    background: #111318;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+
+                        Text {
+                            text: "matching processes";
+                            color: SkeetTheme.text-dim;
+                            font-size: 8px;
+                            font-weight: 700;
+                            letter-spacing: 0.5px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: root.filtered-names.length + " found";
+                            color: SkeetTheme.green;
+                            font-size: 8px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            background: refresh-touch.has-hover ? #1a1d26 : transparent;
+                            border-radius: 3px;
+
+                            Text {
+                                text: "\u{e72c}";
+                                color: refresh-touch.has-hover ? SkeetTheme.green : SkeetTheme.text-dim;
+                                font-family: "Segoe MDL2 Assets";
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                            }
+
+                            refresh-touch := TouchArea {
+                                clicked => { root.refresh-processes(); }
+                            }
+                        }
+                    }
+                }
+
+                if root.filtered-names.length > 0: Flickable {
+                    viewport-height: root.filtered-names.length * 24px;
+
+                    VerticalLayout {
+                        for name[idx] in root.filtered-names: Rectangle {
+                            height: 24px;
+                            background: row-touch.has-hover ? #17210e : transparent;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                if idx < root.filtered-icons.length && root.filtered-icons[idx] != @image-url(""): Image {
+                                    source: root.filtered-icons[idx];
+                                    width: 16px;
+                                    height: 16px;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                Text {
+                                    text: name;
+                                    color: row-touch.has-hover ? SkeetTheme.green : SkeetTheme.text;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+
+                                Text {
+                                    text: "PID: " + root.filtered-pids[idx];
+                                    color: row-touch.has-hover ? SkeetTheme.green-dim : SkeetTheme.text-dim;
+                                    font-size: 9px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            row-touch := TouchArea {
+                                clicked => {
+                                    root.process-selected(root.filtered-indices[idx]);
+                                    root.selected-index = root.filtered-indices[idx];
+                                    root.game-found = true;
+                                    root.dropdown-open = false;
+                                    root.search-text = "";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.filtered-names.length == 0: VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: "no processes found";
+                        color: SkeetTheme.text-dim;
+                        font-size: 9px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

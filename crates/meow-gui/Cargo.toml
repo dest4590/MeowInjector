@@ -1,0 +1,17 @@
+[package]
+name = "meow-gui"
+version = "0.1.0"
+edition = "2024"
+description = "Pink-themed Slint GUI for meow-injector"
+build = "build.rs"
+
+[dependencies]
+slint = "1.17.1"
+meow-core = { path = "../meow-core" }
+rfd = "0.17.2"
+log = "0.4.34"
+rodio = "0.22"
+ureq = "3"
+
+[build-dependencies]
+slint-build = "1.17.1"

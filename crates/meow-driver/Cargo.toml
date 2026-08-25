@@ -1,0 +1,27 @@
+[package]
+name = "meow-driver"
+version = "0.1.0"
+edition = "2024"
+description = "cute driver, meow"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.wdk.driver-model]
+driver-type = "WDM"
+
+[dependencies]
+wdk = "0.3.1"
+wdk-sys = "0.4.0"
+
+[build-dependencies]
+wdk-build = "0.4.0"
+
+[dev-dependencies]
+wdk-sys = { version = "0.4.0", features = ["test-stubs"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
