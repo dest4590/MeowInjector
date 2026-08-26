@@ -19,19 +19,73 @@ fn config_path() -> std::path::PathBuf {
     base.join("meow-injector.conf")
 }
 
+fn read_config() -> Vec<(String, String)> {
+    std::fs::read_to_string(config_path())
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| {
+                    l.split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_config(pairs: &[(String, String)]) {
+    let content = pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = std::fs::write(config_path(), content);
+}
+
+fn set_config_value(key: &str, value: &str) {
+    let mut pairs = read_config();
+    if let Some(entry) = pairs.iter_mut().find(|(k, _)| k == key) {
+        entry.1 = value.to_string();
+    } else {
+        pairs.push((key.to_string(), value.to_string()));
+    }
+    write_config(&pairs);
+}
+
+fn get_config_value(key: &str) -> String {
+    read_config()
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+        .unwrap_or_default()
+}
+
+const MAX_RECENT_DLLS: usize = 5;
+
+fn load_recent_dlls() -> Vec<String> {
+    get_config_value("recent_dlls")
+        .split('|')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect()
+}
+
+fn save_recent_dll(path: &str) -> Vec<String> {
+    let mut recents: Vec<String> = load_recent_dlls()
+        .into_iter()
+        .filter(|p| !p.eq_ignore_ascii_case(path))
+        .collect();
+    recents.insert(0, path.to_string());
+    recents.truncate(MAX_RECENT_DLLS);
+    set_config_value("recent_dlls", &recents.join("|"));
+    recents
+}
+
 fn save_last_process(name: &str) {
-    let _ = std::fs::write(config_path(), format!("last_process={}", name));
+    set_config_value("last_process", name);
 }
 
 fn load_last_process() -> String {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("last_process="))
-                .map(|l| l.trim_start_matches("last_process=").to_string())
-        })
-        .unwrap_or_default()
+    get_config_value("last_process")
 }
 
 const KDMAPPER_URL: &str =
@@ -81,6 +135,26 @@ fn do_map_driver() -> Result<String, String> {
     Ok("driver mapped successfully".into())
 }
 
+fn apply_dll(ui: &MainWindow, path: &str) {
+    let recents = save_recent_dll(path);
+    ui.set_recent_dlls(
+        recents
+            .iter()
+            .map(|p| p.as_str().into())
+            .collect::<Vec<_>>()
+            .as_slice()
+            .into(),
+    );
+    ui.set_dll_path(path.into());
+    let short_name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+    ui.set_dll_hint(format!("{short_name}...").into());
+    ui.set_status_text("".into());
+    ui.set_inject_ready(ui.get_process_pid() > 0);
+}
+
 pub fn run_gui() {
     let main_window = MainWindow::new().unwrap();
     let audio = sound::Audio::new();
@@ -120,8 +194,10 @@ pub fn run_gui() {
 
     #[cfg(target_os = "windows")]
     {
-        let driver = Driver::open(DEVICE_PATH);
-        main_window.set_driver_ok(driver.is_valid());
+        let driver_ok = Driver::open(DEVICE_PATH)
+            .map(|d| d.is_valid())
+            .unwrap_or(false);
+        main_window.set_driver_ok(driver_ok);
     }
 
     {
@@ -141,6 +217,18 @@ pub fn run_gui() {
                 main_window.set_inject_ready(!dll.is_empty());
             }
         }
+    }
+
+    {
+        let recents = load_recent_dlls();
+        main_window.set_recent_dlls(
+            recents
+                .iter()
+                .map(|p| p.as_str().into())
+                .collect::<Vec<_>>()
+                .as_slice()
+                .into(),
+        );
     }
 
     {
@@ -203,21 +291,40 @@ pub fn run_gui() {
                     .add_filter("All Files", &["*"])
                     .pick_file()
             {
-                let path_str = path.to_string_lossy().to_string();
-                ui.set_dll_path(path_str.clone().into());
-
-                let short_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path_str);
-                ui.set_dll_hint(format!("{}...", short_name).into());
-                ui.set_status_text("".into());
-
-                let ready = ui.get_process_pid() > 0;
-                ui.set_inject_ready(ready);
+                apply_dll(&ui, &path.to_string_lossy());
             }
         });
     }
+
+    {
+        let ui_handle = main_window.as_weak();
+        main_window.on_recent_selected(move |path| {
+            if let Some(ui) = ui_handle.upgrade() {
+                let path = path.to_string();
+                if std::path::Path::new(&path).exists() {
+                    apply_dll(&ui, &path);
+                } else {
+                    let recents: Vec<String> = load_recent_dlls()
+                        .into_iter()
+                        .filter(|p| !p.eq_ignore_ascii_case(&path))
+                        .collect();
+                    set_config_value("recent_dlls", &recents.join("|"));
+                    ui.set_recent_dlls(
+                        recents
+                            .iter()
+                            .map(|p| p.as_str().into())
+                            .collect::<Vec<_>>()
+                            .as_slice()
+                            .into(),
+                    );
+                }
+                ui.set_recents_open(false);
+            }
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    install_drag_drop(&main_window);
 
     {
         let all_processes = all_processes.clone();
@@ -228,7 +335,6 @@ pub fn run_gui() {
             let names: Vec<slint::SharedString> =
                 procs.iter().map(|(n, _)| n.as_str().into()).collect();
             let pids: Vec<i32> = procs.iter().map(|(_, p)| *p as i32).collect();
-            let indices: Vec<i32> = (0..procs.len() as i32).collect();
             let icons: Vec<slint::Image> = procs
                 .iter()
                 .map(|(_, pid)| {
@@ -250,10 +356,29 @@ pub fn run_gui() {
             if let Some(ui) = ui_handle.upgrade() {
                 ui.set_process_names(slint::ModelRc::from(names.as_slice()));
                 ui.set_process_pids(slint::ModelRc::from(pids.as_slice()));
-                ui.set_filtered_names(slint::ModelRc::from(names.as_slice()));
-                ui.set_filtered_pids(slint::ModelRc::from(pids.as_slice()));
-                ui.set_filtered_indices(slint::ModelRc::from(indices.as_slice()));
-                ui.set_filtered_icons(slint::ModelRc::from(icons.as_slice()));
+
+                let query = ui.get_search_text().to_string().to_lowercase();
+                let all = all_processes.borrow();
+                let ic = all_icons.borrow();
+
+                let mut fn_: Vec<slint::SharedString> = Vec::new();
+                let mut fp_: Vec<i32> = Vec::new();
+                let mut fi_: Vec<i32> = Vec::new();
+                let mut fic_: Vec<slint::Image> = Vec::new();
+
+                for (i, (name, pid)) in all.iter().enumerate() {
+                    if query.is_empty() || name.to_lowercase().contains(&query) {
+                        fn_.push(name.as_str().into());
+                        fp_.push(*pid as i32);
+                        fi_.push(i as i32);
+                        fic_.push(ic.get(i).cloned().unwrap_or_default());
+                    }
+                }
+
+                ui.set_filtered_names(slint::ModelRc::from(fn_.as_slice()));
+                ui.set_filtered_pids(slint::ModelRc::from(fp_.as_slice()));
+                ui.set_filtered_indices(slint::ModelRc::from(fi_.as_slice()));
+                ui.set_filtered_icons(slint::ModelRc::from(fic_.as_slice()));
             }
         });
     }
@@ -289,19 +414,20 @@ pub fn run_gui() {
                     let ui_weak = ui_handle.clone();
                     let audio = audio.clone();
                     std::thread::spawn(move || {
-                        let driver = Driver::open(DEVICE_PATH);
-                        if !driver.is_valid() {
-                            audio.play_error();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_weak.upgrade() {
-                                    ui.set_injecting(false);
-                                    ui.set_status_text("driver not available".into());
-                                    ui.set_status_ok(false);
-                                }
-                            });
-                            return;
-                        }
-
+                        let driver = match Driver::open(DEVICE_PATH) {
+                            Ok(d) if d.is_valid() => d,
+                            _ => {
+                                audio.play_error();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak.upgrade() {
+                                        ui.set_injecting(false);
+                                        ui.set_status_text("driver not available".into());
+                                        ui.set_status_ok(false);
+                                    }
+                                });
+                                return;
+                            }
+                        };
                         let result = meow_core::inject::manual_map(&driver, pid, &dll_path);
 
                         let audio = audio.clone();
@@ -353,8 +479,10 @@ pub fn run_gui() {
                                     ui.set_status_ok(true);
                                     #[cfg(target_os = "windows")]
                                     {
-                                        let driver = Driver::open(DEVICE_PATH);
-                                        ui.set_driver_ok(driver.is_valid());
+                                        let driver_ok = Driver::open(DEVICE_PATH)
+                                            .map(|d| d.is_valid())
+                                            .unwrap_or(false);
+                                        ui.set_driver_ok(driver_ok);
                                     }
                                 }
                                 Err(e) => {
@@ -370,5 +498,150 @@ pub fn run_gui() {
         });
     }
 
+    let grad_timer = std::rc::Rc::new(slint::Timer::default());
+    {
+        let window_weak = main_window.as_weak();
+        let t = grad_timer.clone();
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(16),
+            move || {
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                let mut x = window.get_grad_x();
+                x -= 360.0 * 0.003;
+                if x <= -360.0 {
+                    x += 360.0;
+                }
+                window.set_grad_x(x);
+            },
+        );
+    }
+
     main_window.run().unwrap();
+    let _ = grad_timer;
+}
+
+#[cfg(target_os = "windows")]
+fn install_drag_drop(main_window: &MainWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let (_tx, rx) = drop_files::channel();
+    let ui_handle = main_window.as_weak();
+
+    let poll_timer = std::rc::Rc::new(slint::Timer::default());
+    {
+        let ui_handle = ui_handle.clone();
+        poll_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(150),
+            move || {
+                while let Ok(path) = rx.try_recv() {
+                    if path.to_lowercase().ends_with(".dll")
+                        && let Some(ui) = ui_handle.upgrade()
+                    {
+                        apply_dll(&ui, &path);
+                    }
+                }
+            },
+        );
+    }
+
+    let ui_handle = main_window.as_weak();
+    let _ = ui_handle.upgrade_in_event_loop(move |ui| {
+        let weak = ui.as_weak();
+        let hook_timer = std::rc::Rc::new(slint::Timer::default());
+        let cb_timer = hook_timer.clone();
+        hook_timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(100),
+            move || {
+                if let Some(ui) = weak.upgrade()
+                    && let Ok(handle) = ui.window().window_handle().window_handle()
+                    && let RawWindowHandle::Win32(win32) = handle.as_raw()
+                {
+                    drop_files::install(win32.hwnd.get());
+                    cb_timer.stop();
+                }
+            },
+        );
+        std::mem::forget(hook_timer);
+    });
+    std::mem::forget(poll_timer);
+}
+
+#[cfg(target_os = "windows")]
+mod drop_files {
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::mpsc::Sender;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, GWLP_WNDPROC, SetWindowLongPtrW, WM_DROPFILES,
+    };
+
+    static ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    static DROP_SENDER: std::sync::OnceLock<Sender<String>> = std::sync::OnceLock::new();
+
+    pub fn channel() -> (Sender<String>, std::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = DROP_SENDER.set(tx.clone());
+        (tx, rx)
+    }
+
+    pub fn install(hwnd: isize) {
+        if INSTALLED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        unsafe {
+            DragAcceptFiles(hwnd as _, 1);
+            let proc = SetWindowLongPtrW(
+                hwnd as _,
+                GWLP_WNDPROC,
+                hook_proc as unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT
+                    as usize as isize,
+            );
+            ORIG_PROC.store(proc, Ordering::SeqCst);
+        }
+    }
+
+    unsafe extern "system" fn hook_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if msg == WM_DROPFILES && w != 0 {
+            let hdrop = w as *mut core::ffi::c_void;
+            unsafe {
+                let count = DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0);
+                for i in 0..count {
+                    let mut buf = [0u16; 520];
+                    let len = DragQueryFileW(hdrop, i, buf.as_mut_ptr(), buf.len() as u32);
+                    if len > 0
+                        && let Some(tx) = DROP_SENDER.get()
+                        && let Ok(path) = String::from_utf16(&buf[..len as usize])
+                    {
+                        let _ = tx.send(path);
+                    }
+                }
+                DragFinish(hdrop);
+            }
+            return 0;
+        }
+        let orig = ORIG_PROC.load(Ordering::SeqCst);
+        if orig == 0 {
+            0
+        } else {
+            unsafe {
+                CallWindowProcW(
+                    std::mem::transmute::<
+                        isize,
+                        Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
+                    >(orig),
+                    hwnd,
+                    msg,
+                    w,
+                    l,
+                )
+            }
+        }
+    }
 }

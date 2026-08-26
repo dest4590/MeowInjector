@@ -26,8 +26,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 obfstr = "0.4.6"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-
 
 [build-dependencies]
 winresource = "0.1"

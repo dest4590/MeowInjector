@@ -215,7 +215,16 @@ fn process_relocations(
     remote_base: usize,
     delta: isize,
 ) -> Result<(), InjectError> {
-    let base_relocs = file.base_relocs().map_err(InjectError::NoRelocations)?;
+    let base_relocs = match file.base_relocs() {
+        Ok(base_relocs) => base_relocs,
+        // No relocation table means there is nothing to relocate; this is
+        // expected for images built with /FIXED or already at their base.
+        Err(e) if e.is_null() => {
+            log::info!("No relocation table present, skipping relocations");
+            return Ok(());
+        }
+        Err(e) => return Err(InjectError::NoRelocations(e)),
+    };
 
     for block in base_relocs.iter_blocks() {
         let words = block.words();
@@ -348,7 +357,14 @@ fn resolve_imports(
 ) -> Result<(), InjectError> {
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 
-    let imports = file.imports().map_err(InjectError::NoImports)?;
+    let imports = match file.imports() {
+        Ok(imports) => imports,
+        Err(e) if e.is_null() => {
+            log::info!("No import table present, skipping import resolution");
+            return Ok(());
+        }
+        Err(e) => return Err(InjectError::NoImports(e)),
+    };
 
     for desc in imports {
         let dll_name_cstr = desc.dll_name().map_err(InjectError::BadDllName)?;

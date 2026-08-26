@@ -2975,11 +2975,13 @@ version = "0.1.0"
 dependencies = [
  "log",
  "meow-core",
+ "raw-window-handle",
  "rfd",
  "rodio",
  "slint",
  "slint-build",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4801,6 +4803,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",

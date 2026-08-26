@@ -85,6 +85,9 @@ export component MainWindow inherits Window {
 
     in-out property <bool> dropdown-open: false;
     in-out property <string> search-text: "";
+    in-out property <[string]> recent-dlls: [];
+    in-out property <bool> recents-open: false;
+    in-out property <length> grad-x: 0px;
 
     callback inject-clicked();
     callback browse-dll();
@@ -92,6 +95,7 @@ export component MainWindow inherits Window {
     callback filter-processes(string);
     callback refresh-processes();
     callback map-driver();
+    callback recent-selected(string);
 
     Rectangle {
         width: 100%;
@@ -99,12 +103,14 @@ export component MainWindow inherits Window {
         border-width: 1px;
         border-color: SkeetTheme.window-border;
 
+        clip: true;
+
         Rectangle {
-            x: 0;
+            x: root.grad-x;
             y: 0;
-            width: 100%;
+            width: root.width * 2;
             height: 2px;
-            background: @linear-gradient(90deg, #ff3b30 0%, #ff9500 16%, #ffcc00 33%, #96db37 50%, #00c7be 66%, #30b0c7 83%, #af52de 100%);
+            background: @linear-gradient(90deg, #ff3b30 0%, #ff9500 7%, #ffcc00 14%, #96db37 21%, #00c7be 28%, #30b0c7 35%, #af52de 42%, #ff3b30 50%, #ff9500 57%, #ffcc00 64%, #96db37 71%, #00c7be 78%, #30b0c7 85%, #af52de 92%, #ff3b30 100%);
         }
 
         VerticalLayout {
@@ -293,7 +299,7 @@ export component MainWindow inherits Window {
                     spacing: 6px;
                     height: 28px;
 
-                    Rectangle {
+                    dll-box-anchor := Rectangle {
                         background: SkeetTheme.input-bg;
                         border-width: 1px;
                         border-color: SkeetTheme.input-border;
@@ -317,6 +323,27 @@ export component MainWindow inherits Window {
                         width: 70px;
                         text: "browse";
                         clicked => { root.browse-dll(); }
+                    }
+
+                    Rectangle {
+                        width: 28px;
+                        background: rec-touch.pressed ? #20232c : (
+                            rec-touch.has-hover || root.recents-open ? #1e2028 : #16171e);
+                        border-width: 1px;
+                        border-color: root.recents-open ? SkeetTheme.green : SkeetTheme.input-border;
+
+                        Text {
+                            text: "▼";
+                            color: root.recent-dlls.length > 0 ? SkeetTheme.text : SkeetTheme.text-dim;
+                            font-size: 8px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        rec-touch := TouchArea {
+                            enabled: root.recent-dlls.length > 0;
+                            clicked => { root.recents-open = !root.recents-open; }
+                        }
                     }
                 }
             }
@@ -356,6 +383,66 @@ export component MainWindow inherits Window {
                         font-weight: 700;
                         overflow: elide;
                         vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.recents-open: TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.recents-open = false; }
+
+        Rectangle {
+            x: dll-box-anchor.absolute-position.x;
+            y: dll-box-anchor.absolute-position.y + dll-box-anchor.height + 1px;
+            width: dll-box-anchor.width + 70px + 28px;
+            height: min(root.recent-dlls.length * 24px + 20px, root.height - self.y - 10px);
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.green-border;
+            clip: true;
+
+            VerticalLayout {
+                Rectangle {
+                    height: 18px;
+                    background: #111318;
+
+                    Text {
+                        text: "recent dlls";
+                        color: SkeetTheme.text-dim;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                        x: 8px;
+                    }
+                }
+
+                for path in root.recent-dlls: Rectangle {
+                    height: 24px;
+                    background: rrow-touch.has-hover ? #17210e : transparent;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+
+                        Text {
+                            text: path;
+                            color: rrow-touch.has-hover ? SkeetTheme.green : SkeetTheme.text;
+                            font-size: 9px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    rrow-touch := TouchArea {
+                        clicked => { root.recent-selected(path); }
                     }
                 }
             }
