@@ -21,6 +21,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_UI_Shell",
+    "Win32_UI_Accessibility",
 ] }
 thiserror = "2.0.20"
 log = "0.4.34"

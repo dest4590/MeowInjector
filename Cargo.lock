@@ -2978,6 +2978,8 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "rodio",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "ureq",

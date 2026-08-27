@@ -4,7 +4,7 @@ mod sound;
 
 #[cfg(target_os = "windows")]
 use meow_core::driver::Driver;
-use meow_core::process::{extract_process_icon, list_processes};
+use meow_core::process::{ProcessArch, extract_process_icon, list_processes};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -88,6 +88,80 @@ fn load_last_process() -> String {
     get_config_value("last_process")
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct Settings {
+    close_after_inject: bool,
+    minimize_to_tray: bool,
+    auto_map_driver: bool,
+    x64_only: bool,
+    hide_system: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            close_after_inject: false,
+            minimize_to_tray: false,
+            auto_map_driver: false,
+            x64_only: false,
+            hide_system: false,
+        }
+    }
+}
+
+fn settings_path() -> std::path::PathBuf {
+    let base = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    base.join("meow-injector.settings.json")
+}
+
+fn load_settings() -> Settings {
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(s: &Settings) {
+    if let Ok(json) = serde_json::to_string_pretty(s) {
+        let _ = std::fs::write(settings_path(), json);
+    }
+}
+
+const SYSTEM_PROCESSES: &[&str] = &[
+    "system",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "dllhost.exe",
+    "fontdrvhost.exe",
+    "audiodg.exe",
+    "conhost.exe",
+    "registry",
+    "memory compression",
+    "secure system",
+    "idle",
+    "dwm.exe",
+];
+
+fn is_system_process(name: &str) -> bool {
+    let n = name.to_lowercase();
+    SYSTEM_PROCESSES.iter().any(|s| n == *s)
+}
+
+fn arch_to_int(a: ProcessArch) -> i32 {
+    match a {
+        ProcessArch::X64 => 1,
+        ProcessArch::X86 => 2,
+        ProcessArch::Unknown => 0,
+    }
+}
+
 const KDMAPPER_URL: &str =
     "https://github.com/dest4590/MeowInjector/releases/download/0.0.0/kdmapper.exe";
 const DRIVER_URL: &str =
@@ -155,22 +229,100 @@ fn apply_dll(ui: &MainWindow, path: &str) {
     ui.set_inject_ready(ui.get_process_pid() > 0);
 }
 
+fn apply_filter(
+    ui: &MainWindow,
+    all: &[(String, u32, ProcessArch)],
+    icons: &[slint::Image],
+    query: &str,
+    settings: &Settings,
+) {
+    let q = query.to_lowercase();
+    let mut names: Vec<slint::SharedString> = Vec::new();
+    let mut pids: Vec<i32> = Vec::new();
+    let mut indices: Vec<i32> = Vec::new();
+    let mut ic: Vec<slint::Image> = Vec::new();
+    let mut arch: Vec<i32> = Vec::new();
+
+    for (i, (name, pid, a)) in all.iter().enumerate() {
+        if settings.hide_system && is_system_process(name) {
+            continue;
+        }
+        if settings.x64_only && *a != ProcessArch::X64 {
+            continue;
+        }
+        if !q.is_empty() && !name.to_lowercase().contains(&q) {
+            continue;
+        }
+        names.push(name.as_str().into());
+        pids.push(*pid as i32);
+        indices.push(i as i32);
+        ic.push(icons.get(i).cloned().unwrap_or_default());
+        arch.push(arch_to_int(*a));
+    }
+
+    ui.set_filtered_names(slint::ModelRc::from(names.as_slice()));
+    ui.set_filtered_pids(slint::ModelRc::from(pids.as_slice()));
+    ui.set_filtered_indices(slint::ModelRc::from(indices.as_slice()));
+    ui.set_filtered_icons(slint::ModelRc::from(ic.as_slice()));
+    ui.set_filtered_arch(slint::ModelRc::from(arch.as_slice()));
+}
+
+#[cfg(target_os = "windows")]
+fn is_running_as_admin() -> bool {
+    use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_running_as_admin() -> bool {
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn restart_as_admin() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+    if let Ok(exe) = std::env::current_exe() {
+        let file: Vec<u16> = exe
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let op: Vec<u16> = "runas\0".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            ShellExecuteW(
+                0 as _,
+                windows_sys::core::PCWSTR::from(op.as_ptr()),
+                windows_sys::core::PCWSTR::from(file.as_ptr()),
+                0 as _,
+                0 as _,
+                SW_SHOW,
+            );
+        }
+    }
+}
+
 pub fn run_gui() {
     let main_window = MainWindow::new().unwrap();
     let audio = sound::Audio::new();
 
-    let all_processes: Rc<RefCell<Vec<(String, u32)>>> = Rc::new(RefCell::new(Vec::new()));
+    main_window.set_not_admin(!is_running_as_admin());
+
+    let all_processes: Rc<RefCell<Vec<(String, u32, ProcessArch)>>> =
+        Rc::new(RefCell::new(Vec::new()));
     let all_icons: Rc<RefCell<Vec<slint::Image>>> = Rc::new(RefCell::new(Vec::new()));
+    let settings: Rc<RefCell<Settings>> = Rc::new(RefCell::new(load_settings()));
 
     {
         let procs = list_processes();
         let names: Vec<slint::SharedString> =
-            procs.iter().map(|(n, _)| n.as_str().into()).collect();
-        let pids: Vec<i32> = procs.iter().map(|(_, p)| *p as i32).collect();
-        let indices: Vec<i32> = (0..procs.len() as i32).collect();
+            procs.iter().map(|(n, _, _)| n.as_str().into()).collect();
+        let pids: Vec<i32> = procs.iter().map(|(_, p, _)| *p as i32).collect();
         let icons: Vec<slint::Image> = procs
             .iter()
-            .map(|(_, pid)| {
+            .map(|(_, pid, _)| {
                 extract_process_icon(*pid)
                     .map(|(rgba, w, h)| {
                         let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
@@ -184,20 +336,52 @@ pub fn run_gui() {
 
         main_window.set_process_names(slint::ModelRc::from(names.as_slice()));
         main_window.set_process_pids(slint::ModelRc::from(pids.as_slice()));
-        main_window.set_filtered_names(slint::ModelRc::from(names.as_slice()));
-        main_window.set_filtered_pids(slint::ModelRc::from(pids.as_slice()));
-        main_window.set_filtered_indices(slint::ModelRc::from(indices.as_slice()));
-        main_window.set_filtered_icons(slint::ModelRc::from(icons.as_slice()));
         *all_processes.borrow_mut() = procs;
-        *all_icons.borrow_mut() = icons;
+        *all_icons.borrow_mut() = icons.clone();
+
+        let s = settings.borrow();
+        apply_filter(
+            &main_window,
+            &all_processes.borrow()[..],
+            &icons[..],
+            "",
+            &s,
+        );
     }
+
+    main_window.set_close_after_inject(settings.borrow().close_after_inject);
+    main_window.set_minimize_to_tray(settings.borrow().minimize_to_tray);
+    main_window.set_auto_map_driver(settings.borrow().auto_map_driver);
+    main_window.set_x64_only(settings.borrow().x64_only);
+    main_window.set_hide_system(settings.borrow().hide_system);
 
     #[cfg(target_os = "windows")]
     {
-        let driver_ok = Driver::open(DEVICE_PATH)
-            .map(|d| d.is_valid())
-            .unwrap_or(false);
+        let driver_ok = Driver::open(DEVICE_PATH).is_valid();
         main_window.set_driver_ok(driver_ok);
+
+        if settings.borrow().auto_map_driver && !driver_ok {
+            let ui_weak = main_window.as_weak();
+            std::thread::spawn(move || {
+                let result = do_map_driver();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        match result {
+                            Ok(msg) => {
+                                ui.set_status_text(msg.as_str().into());
+                                ui.set_status_ok(true);
+                                let ok = Driver::open(DEVICE_PATH).is_valid();
+                                ui.set_driver_ok(ok);
+                            }
+                            Err(e) => {
+                                ui.set_status_text(format!("failed: {e}").into());
+                                ui.set_status_ok(false);
+                            }
+                        }
+                    }
+                });
+            });
+        }
     }
 
     {
@@ -206,7 +390,7 @@ pub fn run_gui() {
             let procs = all_processes.borrow();
             if let Some(idx) = procs
                 .iter()
-                .position(|(n, _)| n.eq_ignore_ascii_case(&last))
+                .position(|(n, _, _)| n.eq_ignore_ascii_case(&last))
             {
                 main_window.set_selected_index(idx as i32);
                 main_window.set_process_name(procs[idx].0.as_str().into());
@@ -234,31 +418,14 @@ pub fn run_gui() {
     {
         let all_processes = all_processes.clone();
         let all_icons = all_icons.clone();
+        let settings = settings.clone();
         let ui_handle = main_window.as_weak();
         main_window.on_filter_processes(move |query| {
             let all = all_processes.borrow();
             let icons = all_icons.borrow();
-            let q = query.to_string().to_lowercase();
-
-            let mut filtered_names: Vec<slint::SharedString> = Vec::new();
-            let mut filtered_pids: Vec<i32> = Vec::new();
-            let mut filtered_indices: Vec<i32> = Vec::new();
-            let mut filtered_icons: Vec<slint::Image> = Vec::new();
-
-            for (i, (name, pid)) in all.iter().enumerate() {
-                if q.is_empty() || name.to_lowercase().contains(&q) {
-                    filtered_names.push(name.as_str().into());
-                    filtered_pids.push(*pid as i32);
-                    filtered_indices.push(i as i32);
-                    filtered_icons.push(icons.get(i).cloned().unwrap_or_default());
-                }
-            }
-
+            let s = settings.borrow();
             if let Some(ui) = ui_handle.upgrade() {
-                ui.set_filtered_names(slint::ModelRc::from(filtered_names.as_slice()));
-                ui.set_filtered_pids(slint::ModelRc::from(filtered_pids.as_slice()));
-                ui.set_filtered_indices(slint::ModelRc::from(filtered_indices.as_slice()));
-                ui.set_filtered_icons(slint::ModelRc::from(filtered_icons.as_slice()));
+                apply_filter(&ui, &all[..], &icons[..], &query.to_string(), &s);
             }
         });
     }
@@ -268,7 +435,7 @@ pub fn run_gui() {
         let ui_handle = main_window.as_weak();
         main_window.on_process_selected(move |idx| {
             let all = all_processes.borrow();
-            if let Some((name, pid)) = all.get(idx as usize)
+            if let Some((name, pid, _arch)) = all.get(idx as usize)
                 && let Some(ui) = ui_handle.upgrade()
             {
                 let ready = !ui.get_dll_path().is_empty();
@@ -324,20 +491,21 @@ pub fn run_gui() {
     }
 
     #[cfg(target_os = "windows")]
-    install_drag_drop(&main_window);
+    install_drag_drop(&main_window, settings.borrow().minimize_to_tray);
 
     {
         let all_processes = all_processes.clone();
         let all_icons = all_icons.clone();
+        let settings = settings.clone();
         let ui_handle = main_window.as_weak();
         main_window.on_refresh_processes(move || {
             let procs = list_processes();
             let names: Vec<slint::SharedString> =
-                procs.iter().map(|(n, _)| n.as_str().into()).collect();
-            let pids: Vec<i32> = procs.iter().map(|(_, p)| *p as i32).collect();
+                procs.iter().map(|(n, _, _)| n.as_str().into()).collect();
+            let pids: Vec<i32> = procs.iter().map(|(_, p, _)| *p as i32).collect();
             let icons: Vec<slint::Image> = procs
                 .iter()
-                .map(|(_, pid)| {
+                .map(|(_, pid, _)| {
                     extract_process_icon(*pid)
                         .map(|(rgba, w, h)| {
                             let buf =
@@ -356,29 +524,16 @@ pub fn run_gui() {
             if let Some(ui) = ui_handle.upgrade() {
                 ui.set_process_names(slint::ModelRc::from(names.as_slice()));
                 ui.set_process_pids(slint::ModelRc::from(pids.as_slice()));
-
-                let query = ui.get_search_text().to_string().to_lowercase();
                 let all = all_processes.borrow();
                 let ic = all_icons.borrow();
-
-                let mut fn_: Vec<slint::SharedString> = Vec::new();
-                let mut fp_: Vec<i32> = Vec::new();
-                let mut fi_: Vec<i32> = Vec::new();
-                let mut fic_: Vec<slint::Image> = Vec::new();
-
-                for (i, (name, pid)) in all.iter().enumerate() {
-                    if query.is_empty() || name.to_lowercase().contains(&query) {
-                        fn_.push(name.as_str().into());
-                        fp_.push(*pid as i32);
-                        fi_.push(i as i32);
-                        fic_.push(ic.get(i).cloned().unwrap_or_default());
-                    }
-                }
-
-                ui.set_filtered_names(slint::ModelRc::from(fn_.as_slice()));
-                ui.set_filtered_pids(slint::ModelRc::from(fp_.as_slice()));
-                ui.set_filtered_indices(slint::ModelRc::from(fi_.as_slice()));
-                ui.set_filtered_icons(slint::ModelRc::from(fic_.as_slice()));
+                let s = settings.borrow();
+                apply_filter(
+                    &ui,
+                    &all[..],
+                    &ic[..],
+                    &ui.get_search_text().to_string(),
+                    &s,
+                );
             }
         });
     }
@@ -386,6 +541,9 @@ pub fn run_gui() {
     {
         let ui_handle = main_window.as_weak();
         let audio = audio.clone();
+        let settings = settings.clone();
+        #[cfg(not(target_os = "windows"))]
+        let _ = &settings;
         main_window.on_inject_clicked(move || {
             if let Some(ui) = ui_handle.upgrade() {
                 let pid = ui.get_process_pid() as u32;
@@ -413,21 +571,20 @@ pub fn run_gui() {
                 {
                     let ui_weak = ui_handle.clone();
                     let audio = audio.clone();
+                    let close_after_inject = settings.borrow().close_after_inject;
                     std::thread::spawn(move || {
-                        let driver = match Driver::open(DEVICE_PATH) {
-                            Ok(d) if d.is_valid() => d,
-                            _ => {
-                                audio.play_error();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak.upgrade() {
-                                        ui.set_injecting(false);
-                                        ui.set_status_text("driver not available".into());
-                                        ui.set_status_ok(false);
-                                    }
-                                });
-                                return;
-                            }
-                        };
+                        let driver = Driver::open(DEVICE_PATH);
+                        if !driver.is_valid() {
+                            audio.play_error();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_injecting(false);
+                                    ui.set_status_text("driver not available".into());
+                                    ui.set_status_ok(false);
+                                }
+                            });
+                            return;
+                        }
                         let result = meow_core::inject::manual_map(&driver, pid, &dll_path);
 
                         let audio = audio.clone();
@@ -439,6 +596,9 @@ pub fn run_gui() {
                                         audio.play_success();
                                         ui.set_status_text("done! switch to the game".into());
                                         ui.set_status_ok(true);
+                                        if close_after_inject {
+                                            let _ = slint::quit_event_loop();
+                                        }
                                     }
                                     Err(e) => {
                                         audio.play_error();
@@ -479,9 +639,7 @@ pub fn run_gui() {
                                     ui.set_status_ok(true);
                                     #[cfg(target_os = "windows")]
                                     {
-                                        let driver_ok = Driver::open(DEVICE_PATH)
-                                            .map(|d| d.is_valid())
-                                            .unwrap_or(false);
+                                        let driver_ok = Driver::open(DEVICE_PATH).is_valid();
                                         ui.set_driver_ok(driver_ok);
                                     }
                                 }
@@ -495,6 +653,48 @@ pub fn run_gui() {
                     });
                 });
             }
+        });
+    }
+
+    {
+        let settings = settings.clone();
+        let all_processes = all_processes.clone();
+        let all_icons = all_icons.clone();
+        let ui_handle = main_window.as_weak();
+        main_window.on_save_settings(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                let s = Settings {
+                    close_after_inject: ui.get_close_after_inject(),
+                    minimize_to_tray: ui.get_minimize_to_tray(),
+                    auto_map_driver: ui.get_auto_map_driver(),
+                    x64_only: ui.get_x64_only(),
+                    hide_system: ui.get_hide_system(),
+                };
+                save_settings(&s);
+                *settings.borrow_mut() = s.clone();
+                let all = all_processes.borrow();
+                let icons = all_icons.borrow();
+                apply_filter(
+                    &ui,
+                    &all[..],
+                    &icons[..],
+                    &ui.get_search_text().to_string(),
+                    &s,
+                );
+                #[cfg(target_os = "windows")]
+                drop_files::update_tray(s.minimize_to_tray);
+            }
+        });
+    }
+
+    {
+        main_window.on_restart_as_admin(move || {
+            #[cfg(target_os = "windows")]
+            restart_as_admin();
+            let _ = slint::quit_event_loop();
+        });
+        main_window.on_quit_app(move || {
+            let _ = slint::quit_event_loop();
         });
     }
 
@@ -524,7 +724,7 @@ pub fn run_gui() {
 }
 
 #[cfg(target_os = "windows")]
-fn install_drag_drop(main_window: &MainWindow) {
+fn install_drag_drop(main_window: &MainWindow, minimize_to_tray: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let (_tx, rx) = drop_files::channel();
@@ -561,7 +761,7 @@ fn install_drag_drop(main_window: &MainWindow) {
                     && let Ok(handle) = ui.window().window_handle().window_handle()
                     && let RawWindowHandle::Win32(win32) = handle.as_raw()
                 {
-                    drop_files::install(win32.hwnd.get());
+                    drop_files::install(win32.hwnd.get(), minimize_to_tray);
                     cb_timer.stop();
                 }
             },
@@ -575,15 +775,24 @@ fn install_drag_drop(main_window: &MainWindow) {
 mod drop_files {
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::mpsc::Sender;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW};
+    use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{
+        DragAcceptFiles, DragFinish, DragQueryFileW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
+        NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, GWLP_WNDPROC, SetWindowLongPtrW, WM_DROPFILES,
+        AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GWLP_WNDPROC, GetCursorPos,
+        IDI_APPLICATION, IsWindowVisible, LoadIconW, MF_STRING, SW_HIDE, SW_SHOW,
+        SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TPM_BOTTOMALIGN, TPM_RETURNCMD,
+        TPM_RIGHTALIGN, TrackPopupMenu, WM_DROPFILES, WM_LBUTTONUP, WM_RBUTTONUP,
     };
 
     static ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     static DROP_SENDER: std::sync::OnceLock<Sender<String>> = std::sync::OnceLock::new();
+    static TRAY_INSTALLED: AtomicBool = AtomicBool::new(false);
+    static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
+    const TRAY_MSG: u32 = 0x401;
 
     pub fn channel() -> (Sender<String>, std::sync::mpsc::Receiver<String>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -591,10 +800,11 @@ mod drop_files {
         (tx, rx)
     }
 
-    pub fn install(hwnd: isize) {
+    pub fn install(hwnd: isize, minimize_to_tray: bool) {
         if INSTALLED.swap(true, Ordering::SeqCst) {
             return;
         }
+        TRAY_HWND.store(hwnd, Ordering::SeqCst);
         unsafe {
             DragAcceptFiles(hwnd as _, 1);
             let proc = SetWindowLongPtrW(
@@ -605,9 +815,114 @@ mod drop_files {
             );
             ORIG_PROC.store(proc, Ordering::SeqCst);
         }
+        if minimize_to_tray {
+            create_tray_icon(hwnd);
+            TRAY_INSTALLED.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub fn update_tray(enabled: bool) {
+        let hwnd = TRAY_HWND.load(Ordering::SeqCst);
+        if hwnd == 0 {
+            return;
+        }
+        if enabled && !TRAY_INSTALLED.swap(true, Ordering::SeqCst) {
+            create_tray_icon(hwnd);
+        } else if !enabled && TRAY_INSTALLED.swap(false, Ordering::SeqCst) {
+            remove_tray_icon(hwnd);
+        }
+    }
+
+    fn create_tray_icon(hwnd: isize) {
+        unsafe {
+            let hicon = LoadIconW(0 as HINSTANCE, IDI_APPLICATION as *const u16);
+            let mut tip = [0u16; 128];
+            let t = "meowinjector";
+            for (i, c) in t.encode_utf16().enumerate() {
+                if i < tip.len() {
+                    tip[i] = c;
+                }
+            }
+            let nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: hwnd as HWND,
+                uID: TRAY_MSG,
+                uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+                uCallbackMessage: TRAY_MSG,
+                hIcon: hicon,
+                szTip: tip,
+                ..std::mem::zeroed()
+            };
+            Shell_NotifyIconW(NIM_ADD, &nid);
+        }
+    }
+
+    fn remove_tray_icon(hwnd: isize) {
+        unsafe {
+            let nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                hWnd: hwnd as HWND,
+                uID: TRAY_MSG,
+                ..std::mem::zeroed()
+            };
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+        }
+    }
+
+    fn toggle_visibility(hwnd: HWND) {
+        unsafe {
+            let visible = IsWindowVisible(hwnd) != 0;
+            if visible {
+                ShowWindow(hwnd, SW_HIDE);
+            } else {
+                ShowWindow(hwnd, SW_SHOW);
+            }
+        }
+    }
+
+    fn show_tray_menu(hwnd: HWND) {
+        unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return;
+            }
+            let show_label: Vec<u16> = "Show/Hide\0".encode_utf16().collect();
+            let exit_label: Vec<u16> = "Exit\0".encode_utf16().collect();
+            AppendMenuW(menu, MF_STRING, 1, show_label.as_ptr());
+            AppendMenuW(menu, MF_STRING, 2, exit_label.as_ptr());
+            let mut pt = std::mem::zeroed();
+            GetCursorPos(&mut pt);
+            SetForegroundWindow(hwnd);
+            let cmd = TrackPopupMenu(
+                menu,
+                TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                0,
+                hwnd,
+                std::ptr::null(),
+            );
+            DestroyMenu(menu);
+            if cmd == 1 {
+                toggle_visibility(hwnd);
+            } else if cmd == 2 {
+                let _ = slint::quit_event_loop();
+            }
+        }
     }
 
     unsafe extern "system" fn hook_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if msg == TRAY_MSG {
+            let event = (l as u32) & 0xFFFF;
+            if event == WM_LBUTTONUP {
+                toggle_visibility(hwnd);
+                return 0;
+            }
+            if event == WM_RBUTTONUP {
+                show_tray_menu(hwnd);
+                return 0;
+            }
+        }
         if msg == WM_DROPFILES && w != 0 {
             let hdrop = w as *mut core::ffi::c_void;
             unsafe {

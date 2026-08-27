@@ -53,6 +53,51 @@ component SkeetButton inherits Rectangle {
     }
 }
 
+component SettingsToggle inherits Rectangle {
+    in property <string> label;
+    in-out property <bool> checked: false;
+    callback toggled();
+
+    height: 22px;
+
+    HorizontalLayout {
+        spacing: 8px;
+
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            background: root.checked ? SkeetTheme.green : SkeetTheme.input-bg;
+            border-width: 1px;
+            border-color: root.checked ? SkeetTheme.green-border : SkeetTheme.input-border;
+
+            Text {
+                text: "✓";
+                color: #0e0f12;
+                font-size: 11px;
+                font-weight: 800;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                visible: root.checked;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: SkeetTheme.text;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "meowinjector";
 
@@ -89,6 +134,14 @@ export component MainWindow inherits Window {
     in-out property <bool> recents-open: false;
     in-out property <length> grad-x: 0px;
 
+    in-out property <bool> settings-open: false;
+    in-out property <bool> close-after-inject: false;
+    in-out property <bool> minimize-to-tray: false;
+    in-out property <bool> auto-map-driver: false;
+    in-out property <bool> x64-only: false;
+    in-out property <bool> hide-system: false;
+    in-out property <[int]> filtered-arch: [];
+
     callback inject-clicked();
     callback browse-dll();
     callback process-selected(int);
@@ -96,6 +149,11 @@ export component MainWindow inherits Window {
     callback refresh-processes();
     callback map-driver();
     callback recent-selected(string);
+    callback save-settings();
+    callback restart-as-admin();
+    callback quit-app();
+
+    in-out property <bool> not-admin: false;
 
     Rectangle {
         width: 100%;
@@ -139,6 +197,29 @@ export component MainWindow inherits Window {
                     font-family: "Cute Cat";
                     font-weight: 800;
                     vertical-alignment: center;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+
+                    Text {
+                        text: "\u{e713}";
+                        font-family: "Segoe MDL2 Assets";
+                        color: settings-touch.has-hover ? SkeetTheme.green : SkeetTheme.text-dim;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    settings-touch := TouchArea {
+                        clicked => { root.settings-open = !root.settings-open; }
+                    }
                 }
             }
 
@@ -389,6 +470,63 @@ export component MainWindow inherits Window {
         }
     }
 
+    if root.settings-open: TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { root.settings-open = false; }
+
+        Rectangle {
+            x: root.width - 200px - 8px;
+            y: 40px;
+            width: 200px;
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.green-border;
+            clip: true;
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+
+                Text {
+                    text: "settings";
+                    color: SkeetTheme.green;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 0.5px;
+                }
+
+                SettingsToggle {
+                    label: "close after inject";
+                    checked <=> root.close-after-inject;
+                    toggled => { root.save-settings(); }
+                }
+                SettingsToggle {
+                    label: "minimize to tray";
+                    checked <=> root.minimize-to-tray;
+                    toggled => { root.save-settings(); }
+                }
+                SettingsToggle {
+                    label: "auto-map driver on start";
+                    checked <=> root.auto-map-driver;
+                    toggled => { root.save-settings(); }
+                }
+                SettingsToggle {
+                    label: "x64 only";
+                    checked <=> root.x64-only;
+                    toggled => { root.save-settings(); }
+                }
+                SettingsToggle {
+                    label: "hide system processes";
+                    checked <=> root.hide-system;
+                    toggled => { root.save-settings(); }
+                }
+            }
+        }
+    }
+
     if root.recents-open: TouchArea {
         x: 0;
         y: 0;
@@ -551,6 +689,14 @@ export component MainWindow inherits Window {
                                     font-size: 9px;
                                     vertical-alignment: center;
                                 }
+
+                                if root.filtered-arch[idx] != 0: Text {
+                                    text: root.filtered-arch[idx] == 1 ? "x64" : "x86";
+                                    color: root.filtered-arch[idx] == 1 ? SkeetTheme.green : SkeetTheme.text-dim;
+                                    font-size: 8px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
                             }
 
                             row-touch := TouchArea {
@@ -573,6 +719,91 @@ export component MainWindow inherits Window {
                         color: SkeetTheme.text-dim;
                         font-size: 9px;
                         horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.not-admin: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #000000cc;
+
+        Rectangle {
+            width: 280px;
+            height: 150px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.green-border;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: center;
+
+                Text {
+                    text: "admin required";
+                    color: SkeetTheme.green;
+                    font-size: 13px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "run as administrator to map the driver";
+                    color: SkeetTheme.text-muted;
+                    font-size: 9px;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 28px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: restart-touch.pressed ? #213312 : (
+                            restart-touch.has-hover ? #1e2028 : SkeetTheme.green-bg);
+                        border-width: 1px;
+                        border-color: SkeetTheme.green-border;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            Text {
+                                text: "\u{e7b4}";
+                                font-family: "Segoe MDL2 Assets";
+                                color: SkeetTheme.green;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: "restart as admin";
+                                color: SkeetTheme.green;
+                                font-size: 10px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        restart-touch := TouchArea {
+                            clicked => { root.restart-as-admin(); }
+                        }
+                    }
+
+                    SkeetButton {
+                        width: 70px;
+                        text: "quit";
+                        is-danger: true;
+                        clicked => { root.quit-app(); }
                     }
                 }
             }
