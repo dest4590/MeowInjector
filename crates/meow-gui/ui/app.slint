@@ -154,10 +154,16 @@ export component MainWindow inherits Window {
     callback quit-app();
     callback meow-clicked();
     callback disclaimer-accepted();
+    callback crash-quit();
+    callback crash-dismiss();
 
     in-out property <bool> not-admin: false;
     in-out property <bool> disclaimer-open: true;
     in-out property <bool> disclaimer-inject-pending: false;
+
+    in-out property <bool> crash-open: false;
+    in-out property <string> crash-title: "";
+    in-out property <string> crash-detail: "";
 
     Rectangle {
         width: 100%;
@@ -885,6 +891,82 @@ export component MainWindow inherits Window {
                         text: "i understand";
                         primary: true;
                         clicked => { root.disclaimer-accepted(); }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.crash-open: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #000000cc;
+
+        Rectangle {
+            width: 380px;
+            height: 270px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.red-border;
+            clip: true;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    text: root.crash-title != "" ? root.crash-title : "crash";
+                    color: SkeetTheme.red;
+                    font-size: 13px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "the application hit an unexpected error. details are shown below.";
+                    color: SkeetTheme.text-muted;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: SkeetTheme.red-border;
+                }
+
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: crash-detail-text.preferred-height;
+
+                    crash-detail-text := Text {
+                        text: root.crash-detail;
+                        color: SkeetTheme.text-muted;
+                        font-size: 9px;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 28px;
+
+                    SkeetButton {
+                        horizontal-stretch: 1;
+                        text: "dismiss";
+                        clicked => { root.crash-dismiss(); }
+                    }
+
+                    SkeetButton {
+                        horizontal-stretch: 1;
+                        text: "quit";
+                        is-danger: true;
+                        clicked => { root.crash-quit(); }
                     }
                 }
             }

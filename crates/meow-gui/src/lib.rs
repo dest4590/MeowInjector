@@ -6,7 +6,72 @@ mod sound;
 use meow_core::driver::Driver;
 use meow_core::process::{ProcessArch, extract_process_icon, list_processes};
 use std::cell::RefCell;
+use std::panic::{self, PanicHookInfo};
 use std::rc::Rc;
+use std::sync::Mutex;
+
+static LAST_CRASH: Mutex<Option<String>> = Mutex::new(None);
+
+fn format_panic(info: &PanicHookInfo) -> String {
+    let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    };
+    let location = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "unknown location".to_string());
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    format!(
+        "message:\n  {payload}\n\nlocation:\n  {location}\n\nbacktrace:\n{backtrace}"
+    )
+}
+
+fn install_crash_handler(ui_weak: slint::Weak<MainWindow>) {
+    let prev = panic::take_hook();
+    panic::set_hook(Box::new(move |info: &PanicHookInfo| {
+        let detail = format_panic(info);
+        if let Ok(mut g) = LAST_CRASH.lock() {
+            *g = Some(detail.clone());
+        }
+        let _ = slint::invoke_from_event_loop({
+            let ui_weak = ui_weak.clone();
+            let detail = detail.clone();
+            move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_crash_title("unexpected crash".into());
+                    ui.set_crash_detail(detail.as_str().into());
+                    ui.set_crash_open(true);
+                }
+            }
+        });
+        prev(info);
+    }));
+}
+
+fn show_crash_window() {
+    let detail = LAST_CRASH
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| "unknown crash".to_string());
+    if let Ok(window) = MainWindow::new() {
+        window.set_disclaimer_open(false);
+        window.set_crash_title("unexpected crash".into());
+        window.set_crash_detail(detail.as_str().into());
+        window.set_crash_open(true);
+        window.on_crash_quit(|| {
+            let _ = slint::quit_event_loop();
+        });
+        window.on_crash_dismiss(|| {
+            let _ = slint::quit_event_loop();
+        });
+        let _ = window.run();
+    }
+}
 
 #[cfg(target_os = "windows")]
 const DEVICE_PATH: &str = "\\\\.\\{meow}";
@@ -315,6 +380,8 @@ fn restart_as_admin() {
 pub fn run_gui() {
     let main_window = MainWindow::new().unwrap();
     let audio = sound::Audio::new();
+
+    install_crash_handler(main_window.as_weak());
 
     main_window.set_not_admin(!is_running_as_admin());
     main_window.set_disclaimer_open(!disclaimer_accepted());
@@ -747,6 +814,18 @@ pub fn run_gui() {
     }
 
     {
+        main_window.on_crash_quit(move || {
+            let _ = slint::quit_event_loop();
+        });
+        let ui_handle = main_window.as_weak();
+        main_window.on_crash_dismiss(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.set_crash_open(false);
+            }
+        });
+    }
+
+    {
         let audio = audio.clone();
         main_window.on_meow_clicked(move || {
             audio.play_meow();
@@ -774,7 +853,12 @@ pub fn run_gui() {
         );
     }
 
-    main_window.run().unwrap();
+    let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        main_window.run().unwrap();
+    }));
+    if let Err(_) = run_result {
+        show_crash_window();
+    }
     let _ = grad_timer;
 }
 
