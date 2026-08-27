@@ -103,6 +103,20 @@ pub enum InjectError {
     ProtectFailed,
 }
 
+const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
+#[cfg(target_os = "windows")]
+const IMAGE_DIRECTORY_ENTRY_TLS: usize = 9;
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct BootstrapPatches {
+    exception_functions_addr: u64,
+    exception_functions_count: u32,
+    rtl_add_function_table_remote: u64,
+    tls_callbacks_addr: u64,
+}
+
 #[cfg(target_os = "windows")]
 pub fn manual_map(driver: &Driver, pid: u32, dll_path: &str) -> Result<(), InjectError> {
     let path = Path::new(dll_path);
@@ -125,13 +139,27 @@ pub fn manual_map(driver: &Driver, pid: u32, dll_path: &str) -> Result<(), Injec
     );
 
     let remote_base = driver
-        .allocate_memory(pid, size_of_image, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        .allocate_memory(
+            pid,
+            size_of_image,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
         .ok_or(InjectError::AllocateImageFailed)?;
 
-    log::info!("Remote base: 0x{:X}", remote_base);
+    log::info!(
+        "Remote base: 0x{:X}..0x{:X}",
+        remote_base,
+        remote_base + size_of_image
+    );
 
     if !driver.protect_memory(pid, remote_base, size_of_image, PAGE_EXECUTE_READWRITE) {
-        log::warn!("protect_memory failed, trying to continue");
+        log::error!(
+            "protect_memory failed on image range 0x{:X}..0x{:X}",
+            remote_base,
+            remote_base + size_of_image
+        );
+        return Err(InjectError::ProtectFailed);
     }
 
     if !driver.write_memory(pid, remote_base, dll_bytes.as_ptr(), 0x1000) {
@@ -147,13 +175,94 @@ pub fn manual_map(driver: &Driver, pid: u32, dll_path: &str) -> Result<(), Injec
 
     resolve_imports(driver, pid, &file, remote_base)?;
 
+    let patches = collect_bootstrap_patches(driver, pid, &file, &dll_bytes, remote_base, image_base);
+    log::info!(
+        "Bootstrap: .pdata=0x{:X} ({} entries), RtlAddFunctionTable=0x{:X}, TLS callbacks=0x{:X}",
+        patches.exception_functions_addr,
+        patches.exception_functions_count,
+        patches.rtl_add_function_table_remote,
+        patches.tls_callbacks_addr
+    );
+
     let entry_point = remote_base + entry_point_rva;
     log::info!("Entry point: 0x{:X}", entry_point);
 
-    call_dll_main(driver, pid, remote_base, entry_point)?;
+    call_dll_main(driver, pid, remote_base, entry_point, &patches)?;
 
     log::info!("Manual map complete!");
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn rva_to_file_offset(file: &PeFile<'_>, rva: u32) -> Option<usize> {
+    for section in file.section_headers() {
+        let sv = section.VirtualAddress;
+        let sz = section.VirtualSize.max(section.SizeOfRawData);
+        if rva >= sv && rva < sv + sz {
+            return Some((section.PointerToRawData + (rva - sv)) as usize);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn collect_bootstrap_patches(
+    driver: &Driver,
+    pid: u32,
+    file: &PeFile<'_>,
+    dll_bytes: &[u8],
+    remote_base: usize,
+    image_base: usize,
+) -> BootstrapPatches {
+    let mut patches = BootstrapPatches::default();
+
+    let optional = file.optional_header();
+    let dirs = optional.DataDirectory;
+
+    if let Some(exc_dir) = dirs.get(IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+        if exc_dir.Size != 0 && exc_dir.VirtualAddress != 0 {
+            patches.exception_functions_addr = (remote_base + exc_dir.VirtualAddress as usize) as u64;
+            patches.exception_functions_count = exc_dir.Size / 12;
+            patches.rtl_add_function_table_remote =
+                resolve_ntdll_export(driver, pid, "RtlAddFunctionTable").unwrap_or(0);        }
+    }
+
+    if let Some(tls_dir) = dirs.get(IMAGE_DIRECTORY_ENTRY_TLS) {
+        if tls_dir.Size != 0 && tls_dir.VirtualAddress != 0 {
+            const ADDR_OF_CALLBACKS_OFFSET: usize = 0x18;
+            if let Some(file_off) = rva_to_file_offset(file, tls_dir.VirtualAddress) {
+                let want = file_off + ADDR_OF_CALLBACKS_OFFSET + 8;
+                if want <= dll_bytes.len() {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(
+                        &dll_bytes[file_off + ADDR_OF_CALLBACKS_OFFSET..file_off + ADDR_OF_CALLBACKS_OFFSET + 8],
+                    );
+                    let callbacks_va = u64::from_le_bytes(buf);
+                    if callbacks_va != 0 {
+                        let delta = remote_base as i64 - image_base as i64;
+                        patches.tls_callbacks_addr = (callbacks_va as i64 + delta) as u64;
+                    }
+                }
+            }
+        }
+    }
+
+    patches
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_ntdll_export(driver: &Driver, pid: u32, name: &str) -> Option<u64> {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+
+    let ntdll_remote = driver.get_module_base(pid, "ntdll.dll")?;
+    let ntdll_local = unsafe { LoadLibraryA(c"ntdll.dll".as_ptr() as *const u8) };
+    if ntdll_local.is_null() {
+        return None;
+    }
+    let name_c = CString::new(name).ok()?;
+    let local = unsafe { GetProcAddress(ntdll_local, name_c.as_ptr() as *const u8) }?;
+    let delta = ntdll_remote as isize - ntdll_local as isize;
+    Some(local as u64 + delta as u64)
 }
 
 #[cfg(target_os = "windows")]
@@ -217,8 +326,6 @@ fn process_relocations(
 ) -> Result<(), InjectError> {
     let base_relocs = match file.base_relocs() {
         Ok(base_relocs) => base_relocs,
-        // No relocation table means there is nothing to relocate; this is
-        // expected for images built with /FIXED or already at their base.
         Err(e) if e.is_null() => {
             log::info!("No relocation table present, skipping relocations");
             return Ok(());
@@ -470,6 +577,7 @@ fn call_dll_main(
     pid: u32,
     remote_base: usize,
     entry_point: usize,
+    patches: &BootstrapPatches
 ) -> Result<(), InjectError> {
     let signal_size = std::mem::size_of::<u32>();
     let signal_addr = driver
@@ -478,8 +586,12 @@ fn call_dll_main(
 
     log::info!("Signal addr: 0x{:X}", signal_addr);
 
-    let shellcode =
-        build_shellcode_entry_point(remote_base as u64, entry_point as u64, signal_addr as u64);
+    let shellcode = build_shellcode_entry_point(
+        remote_base as u64,
+        entry_point as u64,
+        signal_addr as u64,
+        patches,
+    );
 
     let shellcode_size = 0x1000;
     let shellcode_addr = driver
@@ -510,23 +622,77 @@ fn call_dll_main(
 }
 
 #[cfg(target_os = "windows")]
-fn build_shellcode_entry_point(remote_base: u64, entry_point: u64, signal_addr: u64) -> Vec<u8> {
-    let mut shellcode = Vec::with_capacity(64);
-    shellcode.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
-    shellcode.extend_from_slice(&[0x48, 0xB9]);
-    shellcode.extend_from_slice(&remote_base.to_le_bytes());
-    shellcode.extend_from_slice(&[0x48, 0x31, 0xD2]);
-    shellcode.extend_from_slice(&[0x48, 0x83, 0xC2, 0x01]);
-    shellcode.extend_from_slice(&[0x4D, 0x31, 0xC0]);
-    shellcode.extend_from_slice(&[0x48, 0xB8]);
-    shellcode.extend_from_slice(&entry_point.to_le_bytes());
-    shellcode.extend_from_slice(&[0xFF, 0xD0]);
-    shellcode.extend_from_slice(&[0x49, 0xBB]);
-    shellcode.extend_from_slice(&signal_addr.to_le_bytes());
-    shellcode.extend_from_slice(&[0x41, 0xC7, 0x03, 0x69, 0x00, 0x00, 0x00]);
-    shellcode.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]);
-    shellcode.extend_from_slice(&[0xC3]);
-    shellcode
+fn build_shellcode_entry_point(
+    remote_base: u64,
+    entry_point: u64,
+    signal_addr: u64,
+    patches: &BootstrapPatches,
+) -> Vec<u8> {
+    let mut sc = Vec::with_capacity(256);
+
+    sc.extend_from_slice(&[0x53, 0x56, 0x57]);
+    sc.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]);
+
+    sc.extend_from_slice(&[0x48, 0xBE]);
+    sc.extend_from_slice(&remote_base.to_le_bytes());
+
+    sc.extend_from_slice(&[0x48, 0xBF]);
+    sc.extend_from_slice(&signal_addr.to_le_bytes());
+
+    if patches.exception_functions_addr != 0
+        && patches.exception_functions_count != 0
+        && patches.rtl_add_function_table_remote != 0
+    {
+        sc.extend_from_slice(&[0x48, 0xB9]);
+        sc.extend_from_slice(&patches.exception_functions_addr.to_le_bytes());
+        sc.extend_from_slice(&[0xBA]);
+        sc.extend_from_slice(&patches.exception_functions_count.to_le_bytes());
+        sc.extend_from_slice(&[0x4C, 0x8B, 0xC6]);
+        sc.extend_from_slice(&[0x48, 0xB8]);
+        sc.extend_from_slice(&patches.rtl_add_function_table_remote.to_le_bytes());
+        sc.extend_from_slice(&[0xFF, 0xD0]);
+    }
+
+    if patches.tls_callbacks_addr != 0 {
+        sc.extend_from_slice(&[0x48, 0xBB]);
+        sc.extend_from_slice(&patches.tls_callbacks_addr.to_le_bytes());
+
+        let loop_start = sc.len();
+        sc.extend_from_slice(&[0x48, 0x8B, 0x03]);
+        sc.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        sc.extend_from_slice(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]);
+        let je_operand_off = sc.len() - 4;
+
+        sc.extend_from_slice(&[0x48, 0x8B, 0xCE]);
+        sc.extend_from_slice(&[0xBA, 0x01, 0x00, 0x00, 0x00]);
+        sc.extend_from_slice(&[0x4D, 0x31, 0xC0]);
+        sc.extend_from_slice(&[0xFF, 0xD0]);
+        sc.extend_from_slice(&[0x48, 0x83, 0xC3, 0x08]);
+        sc.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]);
+        let jmp_operand_off = sc.len() - 4;
+        let after_jmp = sc.len();
+        let rel_back = (loop_start as i32) - (after_jmp as i32);
+        sc[jmp_operand_off..jmp_operand_off + 4].copy_from_slice(&rel_back.to_le_bytes());
+
+        let end_of_loop = sc.len();
+        let rel_fwd = (end_of_loop as i32) - (je_operand_off as i32 + 4);
+        sc[je_operand_off..je_operand_off + 4].copy_from_slice(&rel_fwd.to_le_bytes());
+    }
+
+    sc.extend_from_slice(&[0x48, 0x8B, 0xCE]);
+    sc.extend_from_slice(&[0xBA, 0x01, 0x00, 0x00, 0x00]);
+    sc.extend_from_slice(&[0x41, 0xB8, 0x01, 0x00, 0x00, 0x00]);
+    sc.extend_from_slice(&[0x48, 0xB8]);
+    sc.extend_from_slice(&entry_point.to_le_bytes());
+    sc.extend_from_slice(&[0xFF, 0xD0]);
+
+    sc.extend_from_slice(&[0xC7, 0x07, 0x69, 0x00, 0x00, 0x00]);
+
+    sc.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]);
+    sc.extend_from_slice(&[0x5F, 0x5E, 0x5B]);
+    sc.push(0xC3);
+
+    sc
 }
 
 #[cfg(target_os = "windows")]
