@@ -472,6 +472,7 @@ pub fn run_gui() {
                 main_window.set_selected_index(idx as i32);
                 main_window.set_process_name(procs[idx].0.as_str().into());
                 main_window.set_process_pid(procs[idx].1 as i32);
+                main_window.set_process_icon(all_icons.borrow()[idx].clone());
                 main_window.set_game_status(procs[idx].0.as_str().into());
                 main_window.set_game_found(true);
                 let dll = main_window.get_dll_path();
@@ -509,15 +510,20 @@ pub fn run_gui() {
 
     {
         let all_processes = all_processes.clone();
+        let all_icons = all_icons.clone();
         let ui_handle = main_window.as_weak();
         main_window.on_process_selected(move |idx| {
             let all = all_processes.borrow();
+            let icons = all_icons.borrow();
             if let Some((name, pid, _arch)) = all.get(idx as usize)
                 && let Some(ui) = ui_handle.upgrade()
             {
                 let ready = !ui.get_dll_path().is_empty();
                 ui.set_process_name(name.as_str().into());
                 ui.set_process_pid(*pid as i32);
+                ui.set_process_icon(
+                    icons.get(idx as usize).cloned().unwrap_or_default(),
+                );
                 ui.set_game_status(name.as_str().into());
                 ui.set_game_found(true);
                 ui.set_inject_ready(ready);
