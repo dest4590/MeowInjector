@@ -139,6 +139,7 @@ export component MainWindow inherits Window {
     in-out property <bool> minimize-to-tray: false;
     in-out property <bool> auto-map-driver: false;
     in-out property <bool> hide-system: false;
+    in-out property <bool> mute-sound: false;
     in-out property <[int]> filtered-arch: [];
 
     callback inject-clicked();
@@ -151,6 +152,7 @@ export component MainWindow inherits Window {
     callback save-settings();
     callback restart-as-admin();
     callback quit-app();
+    callback meow-clicked();
 
     in-out property <bool> not-admin: false;
 
@@ -480,7 +482,7 @@ export component MainWindow inherits Window {
             x: root.width - 200px - 8px;
             y: 40px;
             width: 200px;
-            height: 160px;
+            height: 232px;
             background: #090a0d;
             border-width: 1px;
             border-color: SkeetTheme.green-border;
@@ -517,6 +519,22 @@ export component MainWindow inherits Window {
                     label: "hide system processes";
                     checked <=> root.hide-system;
                     toggled => { root.save-settings(); }
+                }
+                SettingsToggle {
+                    label: "mute sound";
+                    checked <=> root.mute-sound;
+                    toggled => { root.save-settings(); }
+                }
+
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 6px;
+
+                    SkeetButton {
+                        horizontal-stretch: 1;
+                        text: "meow";
+                        clicked => { root.meow-clicked(); }
+                    }
                 }
             }
         }

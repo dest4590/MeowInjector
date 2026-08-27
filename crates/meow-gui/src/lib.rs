@@ -94,6 +94,7 @@ struct Settings {
     minimize_to_tray: bool,
     auto_map_driver: bool,
     hide_system: bool,
+    mute_sound: bool,
 }
 
 impl Default for Settings {
@@ -103,6 +104,7 @@ impl Default for Settings {
             minimize_to_tray: false,
             auto_map_driver: false,
             hide_system: false,
+            mute_sound: false,
         }
     }
 }
@@ -351,6 +353,8 @@ pub fn run_gui() {
     main_window.set_minimize_to_tray(settings.borrow().minimize_to_tray);
     main_window.set_auto_map_driver(settings.borrow().auto_map_driver);
     main_window.set_hide_system(settings.borrow().hide_system);
+    main_window.set_mute_sound(settings.borrow().mute_sound);
+    audio.set_muted(settings.borrow().mute_sound);
 
     #[cfg(target_os = "windows")]
     {
@@ -657,6 +661,7 @@ pub fn run_gui() {
         let settings = settings.clone();
         let all_processes = all_processes.clone();
         let all_icons = all_icons.clone();
+        let audio = audio.clone();
         let ui_handle = main_window.as_weak();
         main_window.on_save_settings(move || {
             if let Some(ui) = ui_handle.upgrade() {
@@ -665,9 +670,11 @@ pub fn run_gui() {
                     minimize_to_tray: ui.get_minimize_to_tray(),
                     auto_map_driver: ui.get_auto_map_driver(),
                     hide_system: ui.get_hide_system(),
+                    mute_sound: ui.get_mute_sound(),
                 };
                 save_settings(&s);
                 *settings.borrow_mut() = s.clone();
+                audio.set_muted(s.mute_sound);
                 let all = all_processes.borrow();
                 let icons = all_icons.borrow();
                 apply_filter(
@@ -691,6 +698,13 @@ pub fn run_gui() {
         });
         main_window.on_quit_app(move || {
             let _ = slint::quit_event_loop();
+        });
+    }
+
+    {
+        let audio = audio.clone();
+        main_window.on_meow_clicked(move || {
+            audio.play_meow();
         });
     }
 
