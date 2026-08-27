@@ -93,7 +93,6 @@ struct Settings {
     close_after_inject: bool,
     minimize_to_tray: bool,
     auto_map_driver: bool,
-    x64_only: bool,
     hide_system: bool,
 }
 
@@ -103,7 +102,6 @@ impl Default for Settings {
             close_after_inject: false,
             minimize_to_tray: false,
             auto_map_driver: false,
-            x64_only: false,
             hide_system: false,
         }
     }
@@ -247,7 +245,7 @@ fn apply_filter(
         if settings.hide_system && is_system_process(name) {
             continue;
         }
-        if settings.x64_only && *a != ProcessArch::X64 {
+        if *a != ProcessArch::X64 {
             continue;
         }
         if !q.is_empty() && !name.to_lowercase().contains(&q) {
@@ -352,7 +350,6 @@ pub fn run_gui() {
     main_window.set_close_after_inject(settings.borrow().close_after_inject);
     main_window.set_minimize_to_tray(settings.borrow().minimize_to_tray);
     main_window.set_auto_map_driver(settings.borrow().auto_map_driver);
-    main_window.set_x64_only(settings.borrow().x64_only);
     main_window.set_hide_system(settings.borrow().hide_system);
 
     #[cfg(target_os = "windows")]
@@ -667,7 +664,6 @@ pub fn run_gui() {
                     close_after_inject: ui.get_close_after_inject(),
                     minimize_to_tray: ui.get_minimize_to_tray(),
                     auto_map_driver: ui.get_auto_map_driver(),
-                    x64_only: ui.get_x64_only(),
                     hide_system: ui.get_hide_system(),
                 };
                 save_settings(&s);

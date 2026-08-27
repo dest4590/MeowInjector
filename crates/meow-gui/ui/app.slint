@@ -138,7 +138,6 @@ export component MainWindow inherits Window {
     in-out property <bool> close-after-inject: false;
     in-out property <bool> minimize-to-tray: false;
     in-out property <bool> auto-map-driver: false;
-    in-out property <bool> x64-only: false;
     in-out property <bool> hide-system: false;
     in-out property <[int]> filtered-arch: [];
 
@@ -481,6 +480,7 @@ export component MainWindow inherits Window {
             x: root.width - 200px - 8px;
             y: 40px;
             width: 200px;
+            height: 160px;
             background: #090a0d;
             border-width: 1px;
             border-color: SkeetTheme.green-border;
@@ -511,11 +511,6 @@ export component MainWindow inherits Window {
                 SettingsToggle {
                     label: "auto-map driver on start";
                     checked <=> root.auto-map-driver;
-                    toggled => { root.save-settings(); }
-                }
-                SettingsToggle {
-                    label: "x64 only";
-                    checked <=> root.x64-only;
                     toggled => { root.save-settings(); }
                 }
                 SettingsToggle {
@@ -778,7 +773,7 @@ export component MainWindow inherits Window {
                             padding-right: 8px;
 
                             Text {
-                                text: "\u{e7b4}";
+                                text: "\u{e7ef}";
                                 font-family: "Segoe MDL2 Assets";
                                 color: SkeetTheme.green;
                                 font-size: 12px;
