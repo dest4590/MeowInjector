@@ -101,7 +101,7 @@ component SettingsToggle inherits Rectangle {
 export component MainWindow inherits Window {
     title: "meowinjector";
 
-    width: 360px;
+    width: 420px;
     height: 290px;
 
     background: SkeetTheme.bg;
@@ -153,8 +153,11 @@ export component MainWindow inherits Window {
     callback restart-as-admin();
     callback quit-app();
     callback meow-clicked();
+    callback disclaimer-accepted();
 
     in-out property <bool> not-admin: false;
+    in-out property <bool> disclaimer-open: true;
+    in-out property <bool> disclaimer-inject-pending: false;
 
     Rectangle {
         width: 100%;
@@ -505,21 +508,25 @@ export component MainWindow inherits Window {
                     checked <=> root.close-after-inject;
                     toggled => { root.save-settings(); }
                 }
+
                 SettingsToggle {
                     label: "minimize to tray";
                     checked <=> root.minimize-to-tray;
                     toggled => { root.save-settings(); }
                 }
+
                 SettingsToggle {
                     label: "auto-map driver on start";
                     checked <=> root.auto-map-driver;
                     toggled => { root.save-settings(); }
                 }
+
                 SettingsToggle {
                     label: "hide system processes";
                     checked <=> root.hide-system;
                     toggled => { root.save-settings(); }
                 }
+
                 SettingsToggle {
                     label: "mute sound";
                     checked <=> root.mute-sound;
@@ -817,6 +824,70 @@ export component MainWindow inherits Window {
                         text: "quit";
                         is-danger: true;
                         clicked => { root.quit-app(); }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.disclaimer-open: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: #000000cc;
+
+        Rectangle {
+            width: 390px;
+            height: 260px;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: #090a0d;
+            border-width: 1px;
+            border-color: SkeetTheme.red-border;
+            clip: true;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    text: "read this first";
+                    color: SkeetTheme.red;
+                    font-size: 13px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "injector maps a kernel driver via kdmapper, abusing a vulnerable windows driver (iqvw64e.sys Intel driver).";
+                    color: SkeetTheme.text-muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+
+                Text {
+                    text: "injection can be caught by anti-cheat and cause bans, please do not use it with EAC and BE games!";
+                    color: SkeetTheme.text-muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 28px;
+
+                    SkeetButton {
+                        horizontal-stretch: 1;
+                        text: "i understand";
+                        primary: true;
+                        clicked => { root.disclaimer-accepted(); }
                     }
                 }
             }

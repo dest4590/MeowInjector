@@ -59,6 +59,14 @@ fn get_config_value(key: &str) -> String {
         .unwrap_or_default()
 }
 
+fn disclaimer_accepted() -> bool {
+    get_config_value("disclaimer_accepted") == "1"
+}
+
+fn set_disclaimer_accepted() {
+    set_config_value("disclaimer_accepted", "1");
+}
+
 const MAX_RECENT_DLLS: usize = 5;
 
 fn load_recent_dlls() -> Vec<String> {
@@ -309,6 +317,7 @@ pub fn run_gui() {
     let audio = sound::Audio::new();
 
     main_window.set_not_admin(!is_running_as_admin());
+    main_window.set_disclaimer_open(!disclaimer_accepted());
 
     let all_processes: Rc<RefCell<Vec<(String, u32, ProcessArch)>>> =
         Rc::new(RefCell::new(Vec::new()));
@@ -541,12 +550,18 @@ pub fn run_gui() {
 
     {
         let ui_handle = main_window.as_weak();
-        let audio = audio.clone();
-        let settings = settings.clone();
-        #[cfg(not(target_os = "windows"))]
-        let _ = &settings;
-        main_window.on_inject_clicked(move || {
-            if let Some(ui) = ui_handle.upgrade() {
+
+        let do_inject = std::rc::Rc::new({
+            let ui_handle = ui_handle.clone();
+            let audio = audio.clone();
+            let settings = settings.clone();
+            #[cfg(not(target_os = "windows"))]
+            let _ = &settings;
+            move || {
+                let ui = match ui_handle.upgrade() {
+                    Some(ui) => ui,
+                    None => return,
+                };
                 let pid = ui.get_process_pid() as u32;
                 let dll_path = ui.get_dll_path().to_string();
                 let _proc_name = ui.get_process_name().to_string();
@@ -613,6 +628,36 @@ pub fn run_gui() {
                 }
             }
         });
+
+        main_window.on_inject_clicked({
+            let do_inject = do_inject.clone();
+            let ui_handle = ui_handle.clone();
+            move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    if !disclaimer_accepted() {
+                        ui.set_disclaimer_open(true);
+                        ui.set_disclaimer_inject_pending(true);
+                        return;
+                    }
+                }
+                do_inject();
+            }
+        });
+
+        main_window.on_disclaimer_accepted({
+            let ui_handle = ui_handle.clone();
+            let do_inject = do_inject.clone();
+            move || {
+                set_disclaimer_accepted();
+                if let Some(ui) = ui_handle.upgrade() {
+                    ui.set_disclaimer_open(false);
+                    if ui.get_disclaimer_inject_pending() {
+                        ui.set_disclaimer_inject_pending(false);
+                        do_inject();
+                    }
+                }
+            }
+        });
     }
 
     {
@@ -635,7 +680,7 @@ pub fn run_gui() {
                             ui.set_mapping(false);
                             match result {
                                 Ok(msg) => {
-                                    audio.play_success();
+                                    // audio.play_success();
                                     ui.set_status_text(msg.as_str().into());
                                     ui.set_status_ok(true);
                                     #[cfg(target_os = "windows")]

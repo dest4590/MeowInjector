@@ -1,13 +1,16 @@
 use rodio::mixer::Mixer;
 use rodio::{Decoder, DeviceSinkBuilder, Player};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 static SUCCESS_SOUNDS: &[&[u8]] = &[
     include_bytes!("../../../assets/success-meow.wav"),
     include_bytes!("../../../assets/success2-meow.wav"),
     include_bytes!("../../../assets/success3-meow.wav"),
+    include_bytes!("../../../assets/success4-meow.wav"),
+    include_bytes!("../../../assets/success5-meow.wav"),
+    include_bytes!("../../../assets/success6-meow.wav"),
 ];
 static ERROR_SOUNDS: &[&[u8]] = &[
     include_bytes!("../../../assets/error-meow.wav"),
