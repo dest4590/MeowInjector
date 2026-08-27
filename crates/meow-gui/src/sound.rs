@@ -91,6 +91,7 @@ impl Audio {
         match Decoder::try_from(cursor) {
             Ok(decoder) => {
                 let player = Player::connect_new(&self.mixer);
+                player.set_volume(0.5);
                 player.append(decoder);
                 std::thread::spawn(move || {
                     player.sleep_until_end();

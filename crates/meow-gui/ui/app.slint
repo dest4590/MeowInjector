@@ -202,29 +202,6 @@ export component MainWindow inherits Window {
                     font-weight: 800;
                     vertical-alignment: center;
                 }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-
-                Rectangle {
-                    width: 28px;
-                    height: 28px;
-                    y: (parent.height - self.height) / 2;
-
-                    Text {
-                        text: "\u{e713}";
-                        font-family: "Segoe MDL2 Assets";
-                        color: settings-touch.has-hover ? SkeetTheme.green : SkeetTheme.text-dim;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    settings-touch := TouchArea {
-                        clicked => { root.settings-open = !root.settings-open; }
-                    }
-                }
             }
 
             Rectangle {
@@ -471,6 +448,26 @@ export component MainWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    Rectangle {
+        x: root.width - 28px - 8px;
+        y: 8px;
+        width: 28px;
+        height: 28px;
+
+        Text {
+            text: "\u{e713}";
+            font-family: "Segoe MDL2 Assets";
+            color: settings-touch.has-hover ? SkeetTheme.green : SkeetTheme.text-dim;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        settings-touch := TouchArea {
+            clicked => { root.settings-open = !root.settings-open; }
         }
     }
 
