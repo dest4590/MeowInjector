@@ -5,6 +5,7 @@ mod sound;
 #[cfg(target_os = "windows")]
 use meow_core::driver::Driver;
 use meow_core::process::{ProcessArch, extract_process_icon, list_processes};
+use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::panic::{self, PanicHookInfo};
 use std::rc::Rc;
@@ -25,9 +26,7 @@ fn format_panic(info: &PanicHookInfo) -> String {
         .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
         .unwrap_or_else(|| "unknown location".to_string());
     let backtrace = std::backtrace::Backtrace::force_capture();
-    format!(
-        "message:\n  {payload}\n\nlocation:\n  {location}\n\nbacktrace:\n{backtrace}"
-    )
+    format!("message:\n  {payload}\n\nlocation:\n  {location}\n\nbacktrace:\n{backtrace}")
 }
 
 fn install_crash_handler(ui_weak: slint::Weak<MainWindow>) {
@@ -164,20 +163,23 @@ fn load_last_process() -> String {
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Settings {
     close_after_inject: bool,
-    minimize_to_tray: bool,
     auto_map_driver: bool,
     hide_system: bool,
     mute_sound: bool,
+    use_manual_map: bool,
+    #[serde(default)]
+    favorite_dlls: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             close_after_inject: false,
-            minimize_to_tray: false,
             auto_map_driver: false,
             hide_system: false,
             mute_sound: false,
+            use_manual_map: false,
+            favorite_dlls: Vec::new(),
         }
     }
 }
@@ -300,6 +302,66 @@ fn apply_dll(ui: &MainWindow, path: &str) {
     ui.set_dll_hint(format!("{short_name}...").into());
     ui.set_status_text("".into());
     ui.set_inject_ready(ui.get_process_pid() > 0);
+    ui.set_is_favorite(is_favorite_dll(path));
+}
+
+const MAX_FAVORITE_DLLS: usize = 8;
+
+fn is_favorite_dll(path: &str) -> bool {
+    load_settings()
+        .favorite_dlls
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(path))
+}
+
+fn file_name_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn refresh_favorites_ui(ui: &MainWindow, favs: &[String]) {
+    ui.set_favorite_dlls(
+        favs.iter()
+            .map(|p| p.as_str().into())
+            .collect::<Vec<_>>()
+            .as_slice()
+            .into(),
+    );
+    ui.set_favorite_names(
+        favs.iter()
+            .map(|p| file_name_of(p).as_str().into())
+            .collect::<Vec<_>>()
+            .as_slice()
+            .into(),
+    );
+    let cur = ui.get_dll_path().to_string();
+    ui.set_is_favorite(!cur.is_empty() && favs.iter().any(|p| p.eq_ignore_ascii_case(&cur)));
+}
+
+/// true while the FACEIT anti-cheat kernel service is running.
+/// checked via `sc query faceit` (STATE == RUNNING).
+#[cfg(target_os = "windows")]
+fn faceit_ac_running() -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    match std::process::Command::new("sc")
+        .args(["query", "faceit"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).lines().any(|l| {
+            let u = l.to_uppercase();
+            u.contains("STATE") && u.contains("RUNNING")
+        }),
+        _ => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn faceit_ac_running() -> bool {
+    false
 }
 
 fn apply_filter(
@@ -426,11 +488,51 @@ pub fn run_gui() {
     }
 
     main_window.set_close_after_inject(settings.borrow().close_after_inject);
-    main_window.set_minimize_to_tray(settings.borrow().minimize_to_tray);
     main_window.set_auto_map_driver(settings.borrow().auto_map_driver);
     main_window.set_hide_system(settings.borrow().hide_system);
     main_window.set_mute_sound(settings.borrow().mute_sound);
+    main_window.set_use_manual_map(settings.borrow().use_manual_map);
     audio.set_muted(settings.borrow().mute_sound);
+
+    {
+        let detected = faceit_ac_running();
+        main_window.set_faceit_active(detected);
+        if detected {
+            main_window.set_use_manual_map(true);
+        }
+    }
+
+    {
+        let favs = settings.borrow().favorite_dlls.clone();
+        refresh_favorites_ui(&main_window, &favs);
+    }
+
+    let faceit_timer = Rc::new(slint::Timer::default());
+    {
+        let ui_handle = main_window.as_weak();
+        let settings = settings.clone();
+        let t = faceit_timer.clone();
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(5),
+            move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    let detected = faceit_ac_running();
+                    if detected != ui.get_faceit_active() {
+                        ui.set_faceit_active(detected);
+                        if detected {
+                            ui.set_use_manual_map(true);
+                            ui.set_status_text("faceit detected, driver option disabled".into());
+                            ui.set_status_ok(false);
+                        } else {
+                            ui.set_use_manual_map(settings.borrow().use_manual_map);
+                            ui.set_status_text("".into());
+                        }
+                    }
+                }
+            },
+        );
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -521,9 +623,7 @@ pub fn run_gui() {
                 let ready = !ui.get_dll_path().is_empty();
                 ui.set_process_name(name.as_str().into());
                 ui.set_process_pid(*pid as i32);
-                ui.set_process_icon(
-                    icons.get(idx as usize).cloned().unwrap_or_default(),
-                );
+                ui.set_process_icon(icons.get(idx as usize).cloned().unwrap_or_default());
                 ui.set_game_status(name.as_str().into());
                 ui.set_game_found(true);
                 ui.set_inject_ready(ready);
@@ -574,7 +674,7 @@ pub fn run_gui() {
     }
 
     #[cfg(target_os = "windows")]
-    install_drag_drop(&main_window, settings.borrow().minimize_to_tray);
+    install_drag_drop(&main_window);
 
     {
         let all_processes = all_processes.clone();
@@ -661,20 +761,27 @@ pub fn run_gui() {
                     let ui_weak = ui_handle.clone();
                     let audio = audio.clone();
                     let close_after_inject = settings.borrow().close_after_inject;
+                    let use_manual_map = ui.get_use_manual_map();
                     std::thread::spawn(move || {
-                        let driver = Driver::open(DEVICE_PATH);
-                        if !driver.is_valid() {
-                            audio.play_error();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_weak.upgrade() {
-                                    ui.set_injecting(false);
-                                    ui.set_status_text("driver not available".into());
-                                    ui.set_status_ok(false);
-                                }
-                            });
-                            return;
-                        }
-                        let result = meow_core::inject::manual_map(&driver, pid, &dll_path);
+                        let result = if use_manual_map {
+                            // ManualMap toggle ON: classic usermode ManualMap,
+                            // reverse-engineered from chudette-injector. No driver needed.
+                            meow_core::inject::manual_map_usermode(pid, &dll_path)
+                        } else {
+                            let driver = Driver::open(DEVICE_PATH);
+                            if !driver.is_valid() {
+                                audio.play_error();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak.upgrade() {
+                                        ui.set_injecting(false);
+                                        ui.set_status_text("driver not available".into());
+                                        ui.set_status_ok(false);
+                                    }
+                                });
+                                return;
+                            }
+                            meow_core::inject::manual_map(&driver, pid, &dll_path)
+                        };
 
                         let audio = audio.clone();
                         let _ = slint::invoke_from_event_loop(move || {
@@ -702,7 +809,9 @@ pub fn run_gui() {
             }
         });
 
-        main_window.on_inject_clicked({
+        // shared entry point: disclaimer gate + do_inject.
+        // used by the INJECT button and the favorite-dll quick buttons.
+        let request_inject = Rc::new({
             let do_inject = do_inject.clone();
             let ui_handle = ui_handle.clone();
             move || {
@@ -716,6 +825,59 @@ pub fn run_gui() {
                 do_inject();
             }
         });
+
+        main_window.on_inject_clicked({
+            let request_inject = request_inject.clone();
+            move || request_inject()
+        });
+
+        {
+            let ui_handle = ui_handle.clone();
+            let settings = settings.clone();
+            let request_inject = request_inject.clone();
+            main_window.on_favorite_clicked(move |path| {
+                if let Some(ui) = ui_handle.upgrade() {
+                    let path = path.to_string();
+                    if std::path::Path::new(&path).exists() {
+                        apply_dll(&ui, &path);
+                        request_inject();
+                    } else {
+                        let mut s = settings.borrow_mut();
+                        s.favorite_dlls.retain(|p| !p.eq_ignore_ascii_case(&path));
+                        save_settings(&s);
+                        refresh_favorites_ui(&ui, &s.favorite_dlls);
+                    }
+                }
+            });
+        }
+
+        {
+            let ui_handle = ui_handle.clone();
+            let settings = settings.clone();
+            main_window.on_toggle_favorite(move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    let dll = ui.get_dll_path().to_string();
+                    if dll.is_empty() {
+                        return;
+                    }
+                    let mut s = settings.borrow_mut();
+                    if let Some(i) = s
+                        .favorite_dlls
+                        .iter()
+                        .position(|p| p.eq_ignore_ascii_case(&dll))
+                    {
+                        s.favorite_dlls.remove(i);
+                    } else {
+                        if s.favorite_dlls.len() >= MAX_FAVORITE_DLLS {
+                            s.favorite_dlls.remove(0);
+                        }
+                        s.favorite_dlls.push(dll);
+                    }
+                    save_settings(&s);
+                    refresh_favorites_ui(&ui, &s.favorite_dlls);
+                }
+            });
+        }
 
         main_window.on_disclaimer_accepted({
             let ui_handle = ui_handle.clone();
@@ -738,6 +900,11 @@ pub fn run_gui() {
         let audio = audio.clone();
         main_window.on_map_driver(move || {
             if let Some(ui) = ui_handle.upgrade() {
+                if ui.get_faceit_active() {
+                    ui.set_status_text("blocked: faceit ac is running".into());
+                    ui.set_status_ok(false);
+                    return;
+                }
                 ui.set_mapping(true);
                 ui.set_status_text("mapping driver...".into());
                 ui.set_status_ok(true);
@@ -785,10 +952,11 @@ pub fn run_gui() {
             if let Some(ui) = ui_handle.upgrade() {
                 let s = Settings {
                     close_after_inject: ui.get_close_after_inject(),
-                    minimize_to_tray: ui.get_minimize_to_tray(),
                     auto_map_driver: ui.get_auto_map_driver(),
                     hide_system: ui.get_hide_system(),
                     mute_sound: ui.get_mute_sound(),
+                    use_manual_map: ui.get_use_manual_map(),
+                    favorite_dlls: settings.borrow().favorite_dlls.clone(),
                 };
                 save_settings(&s);
                 *settings.borrow_mut() = s.clone();
@@ -802,8 +970,6 @@ pub fn run_gui() {
                     &ui.get_search_text().to_string(),
                     &s,
                 );
-                #[cfg(target_os = "windows")]
-                drop_files::update_tray(s.minimize_to_tray);
             }
         });
     }
@@ -849,12 +1015,19 @@ pub fn run_gui() {
                 let Some(window) = window_weak.upgrade() else {
                     return;
                 };
-                let mut x = window.get_grad_x();
-                x -= 360.0 * 0.003;
-                if x <= -360.0 {
-                    x += 360.0;
+                // the bar is 2x window wide and the gradient repeats exactly
+                // at 50%, so one rainbow cycle == window width. wrapping by
+                // that amount is seamless (no visible restart).
+                let win = window.window();
+                let period = win.size().width as f32 / win.scale_factor();
+                if period > 0.0 {
+                    let mut x = window.get_grad_x();
+                    x -= 1.2;
+                    while x <= -period {
+                        x += period;
+                    }
+                    window.set_grad_x(x);
                 }
-                window.set_grad_x(x);
             },
         );
     }
@@ -866,10 +1039,11 @@ pub fn run_gui() {
         show_crash_window();
     }
     let _ = grad_timer;
+    let _ = faceit_timer;
 }
 
 #[cfg(target_os = "windows")]
-fn install_drag_drop(main_window: &MainWindow, minimize_to_tray: bool) {
+fn install_drag_drop(main_window: &MainWindow) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let (_tx, rx) = drop_files::channel();
@@ -906,7 +1080,7 @@ fn install_drag_drop(main_window: &MainWindow, minimize_to_tray: bool) {
                     && let Ok(handle) = ui.window().window_handle().window_handle()
                     && let RawWindowHandle::Win32(win32) = handle.as_raw()
                 {
-                    drop_files::install(win32.hwnd.get(), minimize_to_tray);
+                    drop_files::install(win32.hwnd.get());
                     cb_timer.stop();
                 }
             },
@@ -920,24 +1094,15 @@ fn install_drag_drop(main_window: &MainWindow, minimize_to_tray: bool) {
 mod drop_files {
     use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use std::sync::mpsc::Sender;
-    use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-    use windows_sys::Win32::UI::Shell::{
-        DragAcceptFiles, DragFinish, DragQueryFileW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
-        NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
-    };
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GWLP_WNDPROC, GetCursorPos,
-        IDI_APPLICATION, IsWindowVisible, LoadIconW, MF_STRING, SW_HIDE, SW_SHOW,
-        SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TPM_BOTTOMALIGN, TPM_RETURNCMD,
-        TPM_RIGHTALIGN, TrackPopupMenu, WM_DROPFILES, WM_LBUTTONUP, WM_RBUTTONUP,
+        CallWindowProcW, GWLP_WNDPROC, SetWindowLongPtrW, WM_DROPFILES,
     };
 
     static ORIG_PROC: AtomicIsize = AtomicIsize::new(0);
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     static DROP_SENDER: std::sync::OnceLock<Sender<String>> = std::sync::OnceLock::new();
-    static TRAY_INSTALLED: AtomicBool = AtomicBool::new(false);
-    static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
-    const TRAY_MSG: u32 = 0x401;
 
     pub fn channel() -> (Sender<String>, std::sync::mpsc::Receiver<String>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -945,11 +1110,10 @@ mod drop_files {
         (tx, rx)
     }
 
-    pub fn install(hwnd: isize, minimize_to_tray: bool) {
+    pub fn install(hwnd: isize) {
         if INSTALLED.swap(true, Ordering::SeqCst) {
             return;
         }
-        TRAY_HWND.store(hwnd, Ordering::SeqCst);
         unsafe {
             DragAcceptFiles(hwnd as _, 1);
             let proc = SetWindowLongPtrW(
@@ -960,114 +1124,9 @@ mod drop_files {
             );
             ORIG_PROC.store(proc, Ordering::SeqCst);
         }
-        if minimize_to_tray {
-            create_tray_icon(hwnd);
-            TRAY_INSTALLED.store(true, Ordering::SeqCst);
-        }
-    }
-
-    pub fn update_tray(enabled: bool) {
-        let hwnd = TRAY_HWND.load(Ordering::SeqCst);
-        if hwnd == 0 {
-            return;
-        }
-        if enabled && !TRAY_INSTALLED.swap(true, Ordering::SeqCst) {
-            create_tray_icon(hwnd);
-        } else if !enabled && TRAY_INSTALLED.swap(false, Ordering::SeqCst) {
-            remove_tray_icon(hwnd);
-        }
-    }
-
-    fn create_tray_icon(hwnd: isize) {
-        unsafe {
-            let hicon = LoadIconW(0 as HINSTANCE, IDI_APPLICATION as *const u16);
-            let mut tip = [0u16; 128];
-            let t = "meowinjector";
-            for (i, c) in t.encode_utf16().enumerate() {
-                if i < tip.len() {
-                    tip[i] = c;
-                }
-            }
-            let nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: hwnd as HWND,
-                uID: TRAY_MSG,
-                uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
-                uCallbackMessage: TRAY_MSG,
-                hIcon: hicon,
-                szTip: tip,
-                ..std::mem::zeroed()
-            };
-            Shell_NotifyIconW(NIM_ADD, &nid);
-        }
-    }
-
-    fn remove_tray_icon(hwnd: isize) {
-        unsafe {
-            let nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: hwnd as HWND,
-                uID: TRAY_MSG,
-                ..std::mem::zeroed()
-            };
-            Shell_NotifyIconW(NIM_DELETE, &nid);
-        }
-    }
-
-    fn toggle_visibility(hwnd: HWND) {
-        unsafe {
-            let visible = IsWindowVisible(hwnd) != 0;
-            if visible {
-                ShowWindow(hwnd, SW_HIDE);
-            } else {
-                ShowWindow(hwnd, SW_SHOW);
-            }
-        }
-    }
-
-    fn show_tray_menu(hwnd: HWND) {
-        unsafe {
-            let menu = CreatePopupMenu();
-            if menu.is_null() {
-                return;
-            }
-            let show_label: Vec<u16> = "Show/Hide\0".encode_utf16().collect();
-            let exit_label: Vec<u16> = "Exit\0".encode_utf16().collect();
-            AppendMenuW(menu, MF_STRING, 1, show_label.as_ptr());
-            AppendMenuW(menu, MF_STRING, 2, exit_label.as_ptr());
-            let mut pt = std::mem::zeroed();
-            GetCursorPos(&mut pt);
-            SetForegroundWindow(hwnd);
-            let cmd = TrackPopupMenu(
-                menu,
-                TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD,
-                pt.x,
-                pt.y,
-                0,
-                hwnd,
-                std::ptr::null(),
-            );
-            DestroyMenu(menu);
-            if cmd == 1 {
-                toggle_visibility(hwnd);
-            } else if cmd == 2 {
-                let _ = slint::quit_event_loop();
-            }
-        }
     }
 
     unsafe extern "system" fn hook_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-        if msg == TRAY_MSG {
-            let event = (l as u32) & 0xFFFF;
-            if event == WM_LBUTTONUP {
-                toggle_visibility(hwnd);
-                return 0;
-            }
-            if event == WM_RBUTTONUP {
-                show_tray_menu(hwnd);
-                return 0;
-            }
-        }
         if msg == WM_DROPFILES && w != 0 {
             let hdrop = w as *mut core::ffi::c_void;
             unsafe {

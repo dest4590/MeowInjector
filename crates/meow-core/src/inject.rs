@@ -101,6 +101,26 @@ pub enum InjectError {
     LoadNtdllFailed,
     #[error("protect_memory failed, trying to continue")]
     ProtectFailed,
+    #[error("Failed to open target process (need admin / matching arch)")]
+    OpenProcessFailed,
+    #[error("VirtualAllocEx failed in target")]
+    VirtualAllocFailed,
+    #[error("WriteProcessMemory failed")]
+    WriteMemoryFailed,
+    #[error("CreateRemoteThread failed")]
+    CreateThreadFailed,
+    #[error("WaitForSingleObject failed")]
+    WaitFailed,
+    #[error("DLL too small to be a valid PE")]
+    FileTooSmall,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InjectionMethod {
+    #[default]
+    DriverManualMap,
+    ManualMap,
 }
 
 const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
@@ -175,7 +195,8 @@ pub fn manual_map(driver: &Driver, pid: u32, dll_path: &str) -> Result<(), Injec
 
     resolve_imports(driver, pid, &file, remote_base)?;
 
-    let patches = collect_bootstrap_patches(driver, pid, &file, &dll_bytes, remote_base, image_base);
+    let patches =
+        collect_bootstrap_patches(driver, pid, &file, &dll_bytes, remote_base, image_base);
     log::info!(
         "Bootstrap: .pdata=0x{:X} ({} entries), RtlAddFunctionTable=0x{:X}, TLS callbacks=0x{:X}",
         patches.exception_functions_addr,
@@ -221,10 +242,12 @@ fn collect_bootstrap_patches(
 
     if let Some(exc_dir) = dirs.get(IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
         if exc_dir.Size != 0 && exc_dir.VirtualAddress != 0 {
-            patches.exception_functions_addr = (remote_base + exc_dir.VirtualAddress as usize) as u64;
+            patches.exception_functions_addr =
+                (remote_base + exc_dir.VirtualAddress as usize) as u64;
             patches.exception_functions_count = exc_dir.Size / 12;
             patches.rtl_add_function_table_remote =
-                resolve_ntdll_export(driver, pid, "RtlAddFunctionTable").unwrap_or(0);        }
+                resolve_ntdll_export(driver, pid, "RtlAddFunctionTable").unwrap_or(0);
+        }
     }
 
     if let Some(tls_dir) = dirs.get(IMAGE_DIRECTORY_ENTRY_TLS) {
@@ -235,7 +258,8 @@ fn collect_bootstrap_patches(
                 if want <= dll_bytes.len() {
                     let mut buf = [0u8; 8];
                     buf.copy_from_slice(
-                        &dll_bytes[file_off + ADDR_OF_CALLBACKS_OFFSET..file_off + ADDR_OF_CALLBACKS_OFFSET + 8],
+                        &dll_bytes[file_off + ADDR_OF_CALLBACKS_OFFSET
+                            ..file_off + ADDR_OF_CALLBACKS_OFFSET + 8],
                     );
                     let callbacks_va = u64::from_le_bytes(buf);
                     if callbacks_va != 0 {
@@ -577,7 +601,7 @@ fn call_dll_main(
     pid: u32,
     remote_base: usize,
     entry_point: usize,
-    patches: &BootstrapPatches
+    patches: &BootstrapPatches,
 ) -> Result<(), InjectError> {
     let signal_size = std::mem::size_of::<u32>();
     let signal_addr = driver
@@ -786,4 +810,375 @@ fn execute_shellcode_via_hook(
         UnhookWinEvent(hook);
     }
     Ok(())
+}
+#[cfg(target_os = "windows")]
+const MANUAL_MAP_STUB: &[u8] = &[
+    0x40, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0x79, 0x08, 0x4C, 0x8B,
+    0xF1, 0x48, 0x8B, 0x31, 0x41, 0x83, 0xBF, 0x94, 0x00, 0x00, 0x00, 0x00, 0x74, 0x7C, 0x48, 0x89,
+    0x7C, 0x24, 0x50, 0x41, 0x8B, 0xBF, 0x90, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC7, 0x0C, 0x48, 0x03,
+    0xFE, 0x8B, 0x07, 0x85, 0xC0, 0x74, 0x5E, 0x48, 0x89, 0x5C, 0x24, 0x40, 0x48, 0x89, 0x6C, 0x24,
+    0x48, 0x8B, 0xC8, 0x49, 0x8B, 0x46, 0x10, 0x48, 0x03, 0xCE, 0xFF, 0xD0, 0x8B, 0x5F, 0x04, 0x48,
+    0x8B, 0xE8, 0x48, 0x03, 0xDE, 0x48, 0x8B, 0x0B, 0x48, 0x85, 0xC9, 0x74, 0x23, 0x0F, 0x1F, 0x00,
+    0x4D, 0x8B, 0x46, 0x18, 0x48, 0x8D, 0x56, 0x02, 0x48, 0x03, 0xD1, 0x48, 0x8B, 0xCD, 0x41, 0xFF,
+    0xD0, 0x48, 0x89, 0x03, 0x48, 0x8D, 0x5B, 0x08, 0x48, 0x8B, 0x0B, 0x48, 0x85, 0xC9, 0x75, 0xE0,
+    0x8B, 0x47, 0x14, 0x48, 0x83, 0xC7, 0x14, 0x85, 0xC0, 0x75, 0xB6, 0x48, 0x8B, 0x6C, 0x24, 0x48,
+    0x48, 0x8B, 0x5C, 0x24, 0x40, 0x48, 0x8B, 0x7C, 0x24, 0x50, 0x41, 0x8B, 0x47, 0x28, 0x45, 0x33,
+    0xC0, 0x48, 0x03, 0xC6, 0xBA, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xCE, 0xFF, 0xD0, 0x33, 0xC0,
+    0x48, 0x83, 0xC4, 0x20, 0x41, 0x5F, 0x41, 0x5E, 0x5E, 0xC3,
+];
+
+#[cfg(target_os = "windows")]
+type RemoteAlloc = (usize, bool);
+
+#[cfg(target_os = "windows")]
+fn alloc_remote(
+    h_process: windows_sys::Win32::Foundation::HANDLE,
+    size: usize,
+) -> Result<RemoteAlloc, InjectError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, VirtualAllocEx,
+    };
+    unsafe {
+        let rwx = VirtualAllocEx(
+            h_process,
+            std::ptr::null(),
+            size,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        ) as usize;
+        if rwx != 0 {
+            return Ok((rwx, true));
+        }
+        log::warn!(
+            "remote RWX alloc 0x{size:X} failed (Gle={}), retrying RW",
+            GetLastError()
+        );
+        let rw = VirtualAllocEx(
+            h_process,
+            std::ptr::null(),
+            size,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE,
+        ) as usize;
+        if rw == 0 {
+            log::error!("remote RW alloc 0x{size:X} failed: {}", GetLastError());
+            return Err(InjectError::VirtualAllocFailed);
+        }
+        Ok((rw, false))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn protect_remote_rwx(
+    h_process: windows_sys::Win32::Foundation::HANDLE,
+    addr: usize,
+    size: usize,
+) -> Result<(), InjectError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_READWRITE, VirtualProtectEx};
+    let mut old = 0u32;
+    let ok = unsafe {
+        VirtualProtectEx(
+            h_process,
+            addr as *const _,
+            size,
+            PAGE_EXECUTE_READWRITE,
+            &mut old,
+        )
+    };
+    if ok == 0 {
+        log::error!("remote VirtualProtectEx RWX failed: {}", unsafe {
+            GetLastError()
+        });
+        return Err(InjectError::ProtectFailed);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn manual_map_usermode(pid: u32, dll_path: &str) -> Result<(), InjectError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::System::Memory::{
+        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateRemoteThread, INFINITE, OpenProcess, PROCESS_ALL_ACCESS, WaitForSingleObject,
+    };
+
+    const MEM_COMMIT_RESERVE: u32 = MEM_COMMIT | MEM_RESERVE;
+
+    let path = Path::new(dll_path);
+    if !path.exists() {
+        return Err(InjectError::DllNotFound(dll_path.to_string()));
+    }
+    let dll_bytes = fs::read(path).map_err(|e| InjectError::ReadError(e.to_string()))?;
+    let file = PeFile::from_bytes(&dll_bytes).map_err(InjectError::InvalidPe)?;
+
+    if dll_bytes.len() < 0x40 {
+        return Err(InjectError::FileTooSmall);
+    }
+    let e_lfanew = u32::from_le_bytes(dll_bytes[0x3C..0x40].try_into().unwrap()) as usize;
+
+    let optional = file.optional_header();
+    let size_of_image = optional.SizeOfImage as usize;
+    let mut size_of_headers = optional.SizeOfHeaders as usize;
+    size_of_headers = size_of_headers.min(dll_bytes.len());
+    if size_of_image == 0 || size_of_headers == 0 {
+        return Err(InjectError::InvalidPe(pelite::Error::Null));
+    }
+
+    let h_process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
+    if h_process.is_null() {
+        log::error!("OpenProcess failed: {}", unsafe { GetLastError() });
+        return Err(InjectError::OpenProcessFailed);
+    }
+
+    struct HandleGuard(*mut core::ffi::c_void);
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let _guard = HandleGuard(h_process);
+
+    let (remote_base, image_rwx) = alloc_remote(h_process, size_of_image)?;
+    log::info!(
+        "ManualMap: remote base 0x{:X} (SizeOfImage 0x{:X}, rwx={})",
+        remote_base,
+        size_of_image,
+        image_rwx
+    );
+
+    let mut written = 0usize;
+    let ok = unsafe {
+        WriteProcessMemory(
+            h_process,
+            remote_base as *const _,
+            dll_bytes.as_ptr() as *const _,
+            size_of_headers,
+            &mut written,
+        )
+    };
+    if ok == 0 || written != size_of_headers {
+        unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+        return Err(InjectError::WriteHeadersFailed);
+    }
+
+    for section in file.section_headers() {
+        let vsize = section.VirtualSize as usize;
+        let raw_size = section.SizeOfRawData as usize;
+        if vsize == 0 && raw_size == 0 {
+            continue;
+        }
+        let raw_off = section.PointerToRawData as usize;
+        let rva = section.VirtualAddress as usize;
+        if raw_size == 0 {
+            continue;
+        }
+        if raw_off + raw_size > dll_bytes.len() {
+            unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+            return Err(InjectError::WriteSectionFailed(
+                "raw data out of bounds".into(),
+            ));
+        }
+        let name = std::str::from_utf8(&section.Name)
+            .unwrap_or("?")
+            .trim_matches('\0')
+            .to_string();
+        let mut done = 0usize;
+        let ok = unsafe {
+            WriteProcessMemory(
+                h_process,
+                (remote_base + rva) as *const _,
+                dll_bytes[raw_off..].as_ptr() as *const _,
+                raw_size,
+                &mut done,
+            )
+        };
+        if ok == 0 || done != raw_size {
+            unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+            return Err(InjectError::WriteSectionFailed(name));
+        }
+        log::info!(
+            "ManualMap: section '{}' -> 0x{:X} (0x{:X} bytes)",
+            name,
+            remote_base + rva,
+            raw_size
+        );
+    }
+
+    if !image_rwx {
+        if let Err(e) = protect_remote_rwx(h_process, remote_base, size_of_image) {
+            unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+            return Err(e);
+        }
+    }
+
+    let load_library_a = unsafe {
+        let k32 = GetModuleHandleA(c"kernel32.dll".as_ptr() as *const u8);
+        if k32.is_null() {
+            return Err(InjectError::LoadKernel32Failed);
+        }
+        GetProcAddress(k32, c"LoadLibraryA".as_ptr() as *const u8)
+    };
+    let get_proc_address = unsafe {
+        let k32 = GetModuleHandleA(c"kernel32.dll".as_ptr() as *const u8);
+        if k32.is_null() {
+            return Err(InjectError::LoadKernel32Failed);
+        }
+        GetProcAddress(k32, c"GetProcAddress".as_ptr() as *const u8)
+    };
+    if load_library_a.is_none() || get_proc_address.is_none() {
+        unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+        return Err(InjectError::LoadLibraryWNotFound);
+    }
+
+    let params: [u64; 4] = [
+        remote_base as u64,
+        (remote_base + e_lfanew) as u64,
+        load_library_a.unwrap() as u64,
+        get_proc_address.unwrap() as u64,
+    ];
+    let param_remote = unsafe {
+        VirtualAllocEx(
+            h_process,
+            std::ptr::null(),
+            0x20,
+            MEM_COMMIT_RESERVE,
+            PAGE_READWRITE,
+        )
+    } as usize;
+    if param_remote == 0 {
+        unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+        return Err(InjectError::AllocateSignalFailed);
+    }
+    let mut done = 0usize;
+    let ok = unsafe {
+        WriteProcessMemory(
+            h_process,
+            param_remote as *const _,
+            params.as_ptr() as *const _,
+            0x20,
+            &mut done,
+        )
+    };
+    if ok == 0 {
+        unsafe {
+            VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
+        }
+        return Err(InjectError::WriteMemoryFailed);
+    }
+
+    let (stub_remote, stub_rwx) = match alloc_remote(h_process, 0x1000) {
+        Ok(v) => v,
+        Err(_) => {
+            unsafe {
+                VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+                VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
+            }
+            return Err(InjectError::AllocateShellcodeFailed);
+        }
+    };
+    let ok = unsafe {
+        WriteProcessMemory(
+            h_process,
+            stub_remote as *const _,
+            MANUAL_MAP_STUB.as_ptr() as *const _,
+            MANUAL_MAP_STUB.len(),
+            &mut done,
+        )
+    };
+    if ok == 0 {
+        unsafe {
+            VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
+        }
+        return Err(InjectError::WriteShellcodeFailed);
+    }
+    if !stub_rwx {
+        if let Err(e) = protect_remote_rwx(h_process, stub_remote, 0x1000) {
+            unsafe {
+                VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
+                VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+                VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
+            }
+            return Err(e);
+        }
+    }
+
+    let h_thread = unsafe {
+        CreateRemoteThread(
+            h_process,
+            std::ptr::null(),
+            0,
+            Some(std::mem::transmute::<
+                usize,
+                unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
+            >(stub_remote)),
+            param_remote as *const _,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if h_thread.is_null() {
+        unsafe {
+            VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
+        }
+        return Err(InjectError::CreateThreadFailed);
+    }
+    let wait = unsafe { WaitForSingleObject(h_thread, INFINITE) };
+    unsafe {
+        CloseHandle(h_thread);
+        VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
+        VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+    }
+    if wait != 0 {
+        return Err(InjectError::WaitFailed);
+    }
+
+    log::info!(
+        "ManualMap (usermode) complete: image at 0x{:X}",
+        remote_base
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn inject_with_method(
+    driver: Option<&Driver>,
+    pid: u32,
+    dll_path: &str,
+    method: InjectionMethod,
+) -> Result<(), InjectError> {
+    match method {
+        InjectionMethod::DriverManualMap => {
+            let driver = driver
+                .filter(|d| d.is_valid())
+                .ok_or(InjectError::OpenProcessFailed)?;
+            manual_map(driver, pid, dll_path)
+        }
+        InjectionMethod::ManualMap => manual_map_usermode(pid, dll_path),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InjectionMethod {
+    #[default]
+    DriverManualMap,
+    ManualMap,
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn manual_map_usermode(_pid: u32, _dll_path: &str) -> Result<(), String> {
+    Err("usermode ManualMap is Windows-only".to_string())
 }

@@ -16,6 +16,10 @@ global SkeetTheme {
     out property <color> red-bg: #1c0f10;
     out property <color> red-border: #52191b;
 
+    out property <color> amber: #e0a33e;
+    out property <color> amber-bg: #1c1710;
+    out property <color> amber-border: #5a4520;
+
     out property <color> text: #dcdedf;
     out property <color> text-muted: #8e929d;
     out property <color> text-dim: #525663;
@@ -101,8 +105,8 @@ component SettingsToggle inherits Rectangle {
 export component MainWindow inherits Window {
     title: "meowinjector";
 
-    width: 420px;
-    height: 290px;
+    width: 460px;
+    height: 392px;
 
     background: SkeetTheme.bg;
     default-font-family: "Verdana";
@@ -137,11 +141,15 @@ export component MainWindow inherits Window {
 
     in-out property <bool> settings-open: false;
     in-out property <bool> close-after-inject: false;
-    in-out property <bool> minimize-to-tray: false;
     in-out property <bool> auto-map-driver: false;
     in-out property <bool> hide-system: false;
     in-out property <bool> mute-sound: false;
     in-out property <[int]> filtered-arch: [];
+    in-out property <bool> use-manual-map: false;
+    in-out property <[string]> favorite-dlls: [];
+    in-out property <[string]> favorite-names: [];
+    in-out property <bool> is-favorite: false;
+    in-out property <bool> faceit-active: false;
 
     callback inject-clicked();
     callback browse-dll();
@@ -157,6 +165,8 @@ export component MainWindow inherits Window {
     callback disclaimer-accepted();
     callback crash-quit();
     callback crash-dismiss();
+    callback favorite-clicked(string);
+    callback toggle-favorite();
 
     in-out property <bool> not-admin: false;
     in-out property <bool> disclaimer-open: true;
@@ -183,9 +193,9 @@ export component MainWindow inherits Window {
         }
 
         VerticalLayout {
-            padding: 14px;
-            padding-top: 12px;
-            spacing: 12px;
+            padding: 12px;
+            padding-top: 10px;
+            spacing: 8px;
 
             HorizontalLayout {
                 height: 32px;
@@ -195,7 +205,7 @@ export component MainWindow inherits Window {
                 Text {
                     text: "meow";
                     color: #ffffff;
-                    font-size: 32px;
+                    font-size: 30px;
                     font-family: "Cute Cat";
                     font-weight: 800;
                     vertical-alignment: center;
@@ -204,66 +214,134 @@ export component MainWindow inherits Window {
                 Text {
                     text: "injector";
                     color: SkeetTheme.green;
-                    font-size: 32px;
+                    font-size: 30px;
                     font-family: "Cute Cat";
                     font-weight: 800;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: "v0.1.0";
+                    color: SkeetTheme.text-dim;
+                    font-size: 9px;
+                    font-weight: 700;
                     vertical-alignment: center;
                 }
             }
 
             Rectangle {
-                height: 24px;
-                background: root.driver-ok ? SkeetTheme.green-bg : SkeetTheme.red-bg;
+                height: 30px;
+                background: root.faceit-active ? SkeetTheme.red-bg : (
+                    root.driver-ok ? SkeetTheme.green-bg : (
+                    root.mapping ? SkeetTheme.amber-bg : SkeetTheme.red-bg));
                 border-width: 1px;
-                border-color: root.driver-ok ? SkeetTheme.green-border : SkeetTheme.red-border;
+                border-color: root.faceit-active ? SkeetTheme.red-border : (
+                    root.driver-ok ? SkeetTheme.green-border : (
+                    root.mapping ? SkeetTheme.amber-border : SkeetTheme.red-border));
 
                 HorizontalLayout {
                     padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 6px;
+                    padding-right: 6px;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        vertical-stretch: 0;
+                        background: root.faceit-active ? SkeetTheme.red : (
+                            root.driver-ok ? SkeetTheme.green : (
+                            root.mapping ? SkeetTheme.amber : SkeetTheme.red));
+                    }
 
                     Text {
-                        text: root.driver-ok ? "kernel driver loaded" : (
-                            root.mapping ? "mapping driver..." : "kernel driver unloaded");
-                        color: root.driver-ok ? SkeetTheme.green : SkeetTheme.red;
-                        font-size: 9px;
+                        text: root.faceit-active ? "faceit detected, driver disabled" : (
+                            root.driver-ok ? "driver loaded" : (
+                            root.mapping ? "mapping driver..." : "driver unloaded"));
+                        color: root.faceit-active ? SkeetTheme.red : (
+                            root.driver-ok ? SkeetTheme.green : (
+                            root.mapping ? SkeetTheme.amber : SkeetTheme.red));
+                        font-size: 10px;
                         font-weight: 700;
-                        letter-spacing: 0.5px;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         vertical-stretch: 0;
                     }
 
-                    if !root.driver-ok: Rectangle {
-                        height: 100%;
+                    if !root.driver-ok && !root.use-manual-map && !root.faceit-active: Rectangle {
+                        width: 74px;
+                        height: 20px;
+                        y: (parent.height - self.height) / 2;
                         vertical-stretch: 0;
+                        background: map-touch.pressed ? #3a2412 : (
+                            map-touch.has-hover ? #2a2010 : SkeetTheme.amber-bg);
+                        border-width: 1px;
+                        border-color: map-touch.has-hover ? SkeetTheme.amber : SkeetTheme.amber-border;
+
+                        Text {
+                            text: root.mapping ? "..." : "MAP DRIVER";
+                            color: SkeetTheme.amber;
+                            font-size: 8px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        map-touch := TouchArea {
+                            enabled: !root.mapping;
+                            clicked => { root.map-driver(); }
+                        }
+                    }
+                }
+            }
+
+            if root.not-admin && !root.use-manual-map: Rectangle {
+                height: 30px;
+                background: SkeetTheme.amber-bg;
+                border-width: 1px;
+                border-color: SkeetTheme.amber-border;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 6px;
+                    spacing: 8px;
+
+                    Text {
+                        text: "admin required";
+                        color: SkeetTheme.amber;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
                         horizontal-stretch: 1;
+                        vertical-stretch: 0;
+                    }
 
-                        Rectangle {
-                            width: 40px;
-                            height: 16px;
-                            background: map-touch.pressed ? #2a1515 : (
-                                map-touch.has-hover ? #2a1a1a : SkeetTheme.red-bg);
-                            border-width: 1px;
-                            border-color: SkeetTheme.red-border;
-                            border-radius: 3px;
-                            y: (parent.height - self.height) / 2;
-                            x: parent.width - self.width;
+                    Rectangle {
+                        width: 108px;
+                        height: 20px;
+                        y: (parent.height - self.height) / 2;
+                        vertical-stretch: 0;
+                        background: admin-touch.pressed ? #3a2412 : (
+                            admin-touch.has-hover ? #2a2010 : SkeetTheme.amber-bg);
+                        border-width: 1px;
+                        border-color: admin-touch.has-hover ? SkeetTheme.amber : SkeetTheme.amber-border;
 
-                            Text {
-                                text: root.mapping ? "..." : "MAP";
-                                color: SkeetTheme.red;
-                                font-size: 8px;
-                                font-weight: 700;
-                                letter-spacing: 0.5px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        Text {
+                            text: "RESTART AS ADMIN";
+                            color: SkeetTheme.amber;
+                            font-size: 8px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
 
-                            map-touch := TouchArea {
-                                enabled: !root.mapping;
-                                clicked => { root.map-driver(); }
-                            }
+                        admin-touch := TouchArea {
+                            clicked => { root.restart-as-admin(); }
                         }
                     }
                 }
@@ -314,6 +392,7 @@ export component MainWindow inherits Window {
                                 font-size: 10px;
                                 vertical-alignment: center;
                                 y: (parent.height - self.height) / 2;
+                                overflow: elide;
                             }
 
                             proc-search-input := TextInput {
@@ -421,11 +500,129 @@ export component MainWindow inherits Window {
                             clicked => { root.recents-open = !root.recents-open; }
                         }
                     }
+
+                    Rectangle {
+                        width: 28px;
+                        background: star-touch.pressed ? #20232c : (
+                            star-touch.has-hover ? #1e2028 : #16171e);
+                        border-width: 1px;
+                        border-color: root.is-favorite ? SkeetTheme.green-border : SkeetTheme.input-border;
+
+                        Text {
+                            text: root.is-favorite ? "★" : "☆";
+                            color: root.is-favorite ? SkeetTheme.green : SkeetTheme.text-dim;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        star-touch := TouchArea {
+                            enabled: root.dll-path != "";
+                            clicked => { root.toggle-favorite(); }
+                        }
+                    }
+                }
+            }
+
+            if root.favorite-dlls.length > 0: Rectangle {
+                height: 26px;
+                clip: true;
+
+                Flickable {
+                    viewport-width: root.favorite-dlls.length * 126px;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        for fav[idx] in root.favorite-dlls: Rectangle {
+                            width: 120px;
+                            background: fav-touch.pressed ? #213312 : (
+                                fav-touch.has-hover ? #1e2028 : #16171e);
+                            border-width: 1px;
+                            border-color: fav-touch.has-hover ? SkeetTheme.green-border : SkeetTheme.input-border;
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                spacing: 4px;
+
+                                Text {
+                                    text: "▶";
+                                    color: fav-touch.has-hover ? SkeetTheme.green : SkeetTheme.text-dim;
+                                    font-size: 7px;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.favorite-names[idx];
+                                    color: fav-touch.has-hover ? SkeetTheme.green : SkeetTheme.text;
+                                    font-size: 9px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            fav-touch := TouchArea {
+                                clicked => { root.favorite-clicked(fav); }
+                            }
+                        }
+                    }
                 }
             }
 
             Rectangle {
                 vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                height: 22px;
+
+                Text {
+                    text: "ManualMap";
+                    color: root.use-manual-map ? SkeetTheme.green : SkeetTheme.text-muted;
+                    font-size: 10px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: root.faceit-active ? "forced by faceit" : (
+                        root.use-manual-map ? "usermode (no driver)" : "driver");
+                    color: SkeetTheme.text-dim;
+                    font-size: 9px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    width: 32px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    background: root.use-manual-map ? SkeetTheme.green : SkeetTheme.input-bg;
+                    border-width: 1px;
+                    border-color: root.use-manual-map ? SkeetTheme.green-border : SkeetTheme.input-border;
+                    border-radius: 8px;
+
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        x: root.use-manual-map ? parent.width - self.width - 2px : 2px;
+                        y: 1px;
+                        background: root.use-manual-map ? #0e0f12 : SkeetTheme.text-dim;
+                        border-radius: 6px;
+                    }
+
+                    TouchArea {
+                        enabled: !root.faceit-active;
+                        clicked => {
+                            root.use-manual-map = !root.use-manual-map;
+                            root.save-settings();
+                        }
+                    }
+                }
             }
 
             HorizontalLayout {
@@ -496,7 +693,7 @@ export component MainWindow inherits Window {
             x: root.width - 200px - 8px;
             y: 40px;
             width: 200px;
-            height: 232px;
+            height: 202px;
             background: #090a0d;
             border-width: 1px;
             border-color: SkeetTheme.green-border;
@@ -517,12 +714,6 @@ export component MainWindow inherits Window {
                 SettingsToggle {
                     label: "close after inject";
                     checked <=> root.close-after-inject;
-                    toggled => { root.save-settings(); }
-                }
-
-                SettingsToggle {
-                    label: "minimize to tray";
-                    checked <=> root.minimize-to-tray;
                     toggled => { root.save-settings(); }
                 }
 
@@ -750,91 +941,6 @@ export component MainWindow inherits Window {
                         color: SkeetTheme.text-dim;
                         font-size: 9px;
                         horizontal-alignment: center;
-                    }
-                }
-            }
-        }
-    }
-
-    if root.not-admin: Rectangle {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        background: #000000cc;
-
-        Rectangle {
-            width: 280px;
-            height: 150px;
-            x: (root.width - self.width) / 2;
-            y: (root.height - self.height) / 2;
-            background: #090a0d;
-            border-width: 1px;
-            border-color: SkeetTheme.green-border;
-
-            VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
-                alignment: center;
-
-                Text {
-                    text: "admin required";
-                    color: SkeetTheme.green;
-                    font-size: 13px;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                }
-
-                Text {
-                    text: "run as administrator to map the driver";
-                    color: SkeetTheme.text-muted;
-                    font-size: 9px;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    height: 28px;
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        background: restart-touch.pressed ? #213312 : (
-                            restart-touch.has-hover ? #1e2028 : SkeetTheme.green-bg);
-                        border-width: 1px;
-                        border-color: SkeetTheme.green-border;
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            padding-left: 8px;
-                            padding-right: 8px;
-
-                            Text {
-                                text: "\u{e7ef}";
-                                font-family: "Segoe MDL2 Assets";
-                                color: SkeetTheme.green;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-
-                            Text {
-                                text: "restart as admin";
-                                color: SkeetTheme.green;
-                                font-size: 10px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
-                        }
-
-                        restart-touch := TouchArea {
-                            clicked => { root.restart-as-admin(); }
-                        }
-                    }
-
-                    SkeetButton {
-                        width: 70px;
-                        text: "quit";
-                        is-danger: true;
-                        clicked => { root.quit-app(); }
                     }
                 }
             }
