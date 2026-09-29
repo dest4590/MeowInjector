@@ -7,6 +7,7 @@ use meow_core::driver::Driver;
 use meow_core::process::{ProcessArch, extract_process_icon, list_processes};
 use slint::ComponentHandle;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::panic::{self, PanicHookInfo};
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -402,6 +403,135 @@ fn apply_filter(
     ui.set_filtered_arch(slint::ModelRc::from(arch.as_slice()));
 }
 
+type IconCache = Rc<RefCell<HashMap<String, slint::Image>>>;
+type ProcessList = Rc<RefCell<Vec<(String, u32, ProcessArch)>>>;
+
+fn icon_image(pid: u32) -> slint::Image {
+    extract_process_icon(pid)
+        .map(|(rgba, w, h)| {
+            let buf =
+                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+            slint::Image::from_rgba8(buf)
+        })
+        .unwrap_or_default()
+}
+
+/// list all processes, pulling icons from the cache so only brand new
+/// exe names pay for an actual shell icon lookup.
+fn snapshot_processes(
+    icon_cache: &IconCache,
+) -> (Vec<(String, u32, ProcessArch)>, Vec<slint::Image>) {
+    let procs = list_processes();
+    let mut cache = icon_cache.borrow_mut();
+    let icons = procs
+        .iter()
+        .map(|(name, pid, _)| {
+            let key = name.to_ascii_lowercase();
+            if let Some(img) = cache.get(&key) {
+                return img.clone();
+            }
+            let img = icon_image(*pid);
+            if img.size().width > 0 {
+                cache.insert(key, img.clone());
+            }
+            img
+        })
+        .collect();
+    (procs, icons)
+}
+
+/// re-resolve the selected process by name. keeps the remembered name
+/// across restarts so a new pid for the same exe gets picked up again.
+fn sync_selection(ui: &MainWindow, all: &[(String, u32, ProcessArch)], icons: &[slint::Image]) {
+    let name = ui.get_process_name().to_string();
+    if name.is_empty() {
+        return;
+    }
+
+    match all
+        .iter()
+        .position(|(n, _, _)| n.eq_ignore_ascii_case(&name))
+    {
+        Some(idx) => {
+            let pid = all[idx].1;
+            let prev = ui.get_process_pid() as u32;
+            ui.set_selected_index(idx as i32);
+            ui.set_game_found(true);
+            if prev != pid {
+                ui.set_process_pid(pid as i32);
+                ui.set_process_icon(icons.get(idx).cloned().unwrap_or_default());
+                ui.set_inject_ready(!ui.get_dll_path().is_empty() && !ui.get_injecting());
+                if !ui.get_injecting() {
+                    ui.set_status_ok(true);
+                    ui.set_status_text(
+                        if prev == 0 {
+                            format!("found {name} (pid {pid})")
+                        } else {
+                            format!("{name} restarted, pid {prev} -> {pid}")
+                        }
+                        .as_str()
+                        .into(),
+                    );
+                }
+            }
+        }
+        None => {
+            ui.set_selected_index(-1);
+            ui.set_game_found(false);
+            if ui.get_process_pid() != 0 {
+                ui.set_process_pid(0);
+                ui.set_inject_ready(false);
+                if !ui.get_injecting() {
+                    ui.set_status_ok(false);
+                    ui.set_status_text(format!("{name} not running, waiting...").as_str().into());
+                }
+            }
+        }
+    }
+}
+
+/// re-snapshot the process list, push it to the ui and re-resolve the
+/// current selection by name (picking up new pids in realtime).
+fn refresh_process_list(
+    ui: &MainWindow,
+    all_processes: &ProcessList,
+    all_icons: &Rc<RefCell<Vec<slint::Image>>>,
+    settings: &Rc<RefCell<Settings>>,
+    icon_cache: &IconCache,
+) {
+    let (procs, icons) = snapshot_processes(icon_cache);
+
+    let changed = {
+        let cur = all_processes.borrow();
+        cur.len() != procs.len()
+            || cur
+                .iter()
+                .zip(procs.iter())
+                .any(|(a, b)| a.0 != b.0 || a.1 != b.1 || a.2 != b.2)
+    };
+
+    if changed {
+        let names: Vec<slint::SharedString> =
+            procs.iter().map(|(n, _, _)| n.as_str().into()).collect();
+        let pids: Vec<i32> = procs.iter().map(|(_, p, _)| *p as i32).collect();
+        *all_processes.borrow_mut() = procs;
+        *all_icons.borrow_mut() = icons;
+        ui.set_process_names(slint::ModelRc::from(names.as_slice()));
+        ui.set_process_pids(slint::ModelRc::from(pids.as_slice()));
+
+        let s = settings.borrow();
+        apply_filter(
+            ui,
+            &all_processes.borrow()[..],
+            &all_icons.borrow()[..],
+            ui.get_search_text().as_str(),
+            &s,
+        );
+    }
+
+    sync_selection(ui, &all_processes.borrow()[..], &all_icons.borrow()[..]);
+}
+
 #[cfg(target_os = "windows")]
 fn is_running_as_admin() -> bool {
     use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
@@ -451,41 +581,16 @@ pub fn run_gui() {
     let all_processes: Rc<RefCell<Vec<(String, u32, ProcessArch)>>> =
         Rc::new(RefCell::new(Vec::new()));
     let all_icons: Rc<RefCell<Vec<slint::Image>>> = Rc::new(RefCell::new(Vec::new()));
+    let icon_cache: IconCache = Rc::new(RefCell::new(HashMap::new()));
     let settings: Rc<RefCell<Settings>> = Rc::new(RefCell::new(load_settings()));
 
-    {
-        let procs = list_processes();
-        let names: Vec<slint::SharedString> =
-            procs.iter().map(|(n, _, _)| n.as_str().into()).collect();
-        let pids: Vec<i32> = procs.iter().map(|(_, p, _)| *p as i32).collect();
-        let icons: Vec<slint::Image> = procs
-            .iter()
-            .map(|(_, pid, _)| {
-                extract_process_icon(*pid)
-                    .map(|(rgba, w, h)| {
-                        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                            &rgba, w, h,
-                        );
-                        slint::Image::from_rgba8(buf)
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
-
-        main_window.set_process_names(slint::ModelRc::from(names.as_slice()));
-        main_window.set_process_pids(slint::ModelRc::from(pids.as_slice()));
-        *all_processes.borrow_mut() = procs;
-        *all_icons.borrow_mut() = icons.clone();
-
-        let s = settings.borrow();
-        apply_filter(
-            &main_window,
-            &all_processes.borrow()[..],
-            &icons[..],
-            "",
-            &s,
-        );
-    }
+    refresh_process_list(
+        &main_window,
+        &all_processes,
+        &all_icons,
+        &settings,
+        &icon_cache,
+    );
 
     main_window.set_close_after_inject(settings.borrow().close_after_inject);
     main_window.set_auto_map_driver(settings.borrow().auto_map_driver);
@@ -566,6 +671,9 @@ pub fn run_gui() {
     {
         let last = load_last_process();
         if !last.is_empty() {
+            // remember the name even when it is not running, so the
+            // realtime refresh can catch its next pid by itself.
+            main_window.set_process_name(last.as_str().into());
             let procs = all_processes.borrow();
             if let Some(idx) = procs
                 .iter()
@@ -579,8 +687,37 @@ pub fn run_gui() {
                 main_window.set_game_found(true);
                 let dll = main_window.get_dll_path();
                 main_window.set_inject_ready(!dll.is_empty());
+            } else {
+                main_window.set_selected_index(-1);
+                main_window.set_game_found(false);
+                main_window.set_game_status(format!("{last} (not running)").into());
             }
         }
+    }
+
+    let proc_timer = Rc::new(slint::Timer::default());
+    {
+        let ui_handle = main_window.as_weak();
+        let all_processes = all_processes.clone();
+        let all_icons = all_icons.clone();
+        let settings = settings.clone();
+        let icon_cache = icon_cache.clone();
+        let t = proc_timer.clone();
+        t.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(1000),
+            move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    refresh_process_list(
+                        &ui,
+                        &all_processes,
+                        &all_icons,
+                        &settings,
+                        &icon_cache,
+                    );
+                }
+            },
+        );
     }
 
     {
@@ -680,43 +817,11 @@ pub fn run_gui() {
         let all_processes = all_processes.clone();
         let all_icons = all_icons.clone();
         let settings = settings.clone();
+        let icon_cache = icon_cache.clone();
         let ui_handle = main_window.as_weak();
         main_window.on_refresh_processes(move || {
-            let procs = list_processes();
-            let names: Vec<slint::SharedString> =
-                procs.iter().map(|(n, _, _)| n.as_str().into()).collect();
-            let pids: Vec<i32> = procs.iter().map(|(_, p, _)| *p as i32).collect();
-            let icons: Vec<slint::Image> = procs
-                .iter()
-                .map(|(_, pid, _)| {
-                    extract_process_icon(*pid)
-                        .map(|(rgba, w, h)| {
-                            let buf =
-                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    &rgba, w, h,
-                                );
-                            slint::Image::from_rgba8(buf)
-                        })
-                        .unwrap_or_default()
-                })
-                .collect();
-
-            *all_processes.borrow_mut() = procs;
-            *all_icons.borrow_mut() = icons.clone();
-
             if let Some(ui) = ui_handle.upgrade() {
-                ui.set_process_names(slint::ModelRc::from(names.as_slice()));
-                ui.set_process_pids(slint::ModelRc::from(pids.as_slice()));
-                let all = all_processes.borrow();
-                let ic = all_icons.borrow();
-                let s = settings.borrow();
-                apply_filter(
-                    &ui,
-                    &all[..],
-                    &ic[..],
-                    &ui.get_search_text().to_string(),
-                    &s,
-                );
+                refresh_process_list(&ui, &all_processes, &all_icons, &settings, &icon_cache);
             }
         });
     }
@@ -1040,6 +1145,7 @@ pub fn run_gui() {
     }
     let _ = grad_timer;
     let _ = faceit_timer;
+    let _ = proc_timer;
 }
 
 #[cfg(target_os = "windows")]

@@ -376,7 +376,7 @@ export component MainWindow inherits Window {
                             vertical-alignment: center;
                         }
 
-                        if root.process-name != "": Image {
+                        if root.process-name != "" && root.process-pid > 0: Image {
                             source: root.process-icon;
                             width: 16px;
                             height: 16px;
@@ -387,8 +387,11 @@ export component MainWindow inherits Window {
                             horizontal-stretch: 1;
 
                             if !root.dropdown-open: Text {
-                                text: root.process-name != "" ? root.process-name + " (PID: " + root.process-pid + ")" : "Search process...";
-                                color: root.process-name != "" ? SkeetTheme.green : SkeetTheme.text-dim;
+                                text: root.process-name != "" ? (
+                                    root.process-pid > 0 ? root.process-name + " (PID: " + root.process-pid + ")" : root.process-name + " (waiting...)"
+                                ) : "Search process...";
+                                color: root.process-name == "" ? SkeetTheme.text-dim : (
+                                    root.process-pid > 0 ? SkeetTheme.green : SkeetTheme.amber);
                                 font-size: 10px;
                                 vertical-alignment: center;
                                 y: (parent.height - self.height) / 2;
