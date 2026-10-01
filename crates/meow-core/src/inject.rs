@@ -652,71 +652,15 @@ fn build_shellcode_entry_point(
     signal_addr: u64,
     patches: &BootstrapPatches,
 ) -> Vec<u8> {
-    let mut sc = Vec::with_capacity(256);
-
-    sc.extend_from_slice(&[0x53, 0x56, 0x57]);
-    sc.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]);
-
-    sc.extend_from_slice(&[0x48, 0xBE]);
-    sc.extend_from_slice(&remote_base.to_le_bytes());
-
-    sc.extend_from_slice(&[0x48, 0xBF]);
-    sc.extend_from_slice(&signal_addr.to_le_bytes());
-
-    if patches.exception_functions_addr != 0
-        && patches.exception_functions_count != 0
-        && patches.rtl_add_function_table_remote != 0
-    {
-        sc.extend_from_slice(&[0x48, 0xB9]);
-        sc.extend_from_slice(&patches.exception_functions_addr.to_le_bytes());
-        sc.extend_from_slice(&[0xBA]);
-        sc.extend_from_slice(&patches.exception_functions_count.to_le_bytes());
-        sc.extend_from_slice(&[0x4C, 0x8B, 0xC6]);
-        sc.extend_from_slice(&[0x48, 0xB8]);
-        sc.extend_from_slice(&patches.rtl_add_function_table_remote.to_le_bytes());
-        sc.extend_from_slice(&[0xFF, 0xD0]);
-    }
-
-    if patches.tls_callbacks_addr != 0 {
-        sc.extend_from_slice(&[0x48, 0xBB]);
-        sc.extend_from_slice(&patches.tls_callbacks_addr.to_le_bytes());
-
-        let loop_start = sc.len();
-        sc.extend_from_slice(&[0x48, 0x8B, 0x03]);
-        sc.extend_from_slice(&[0x48, 0x85, 0xC0]);
-        sc.extend_from_slice(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]);
-        let je_operand_off = sc.len() - 4;
-
-        sc.extend_from_slice(&[0x48, 0x8B, 0xCE]);
-        sc.extend_from_slice(&[0xBA, 0x01, 0x00, 0x00, 0x00]);
-        sc.extend_from_slice(&[0x4D, 0x31, 0xC0]);
-        sc.extend_from_slice(&[0xFF, 0xD0]);
-        sc.extend_from_slice(&[0x48, 0x83, 0xC3, 0x08]);
-        sc.extend_from_slice(&[0xE9, 0x00, 0x00, 0x00, 0x00]);
-        let jmp_operand_off = sc.len() - 4;
-        let after_jmp = sc.len();
-        let rel_back = (loop_start as i32) - (after_jmp as i32);
-        sc[jmp_operand_off..jmp_operand_off + 4].copy_from_slice(&rel_back.to_le_bytes());
-
-        let end_of_loop = sc.len();
-        let rel_fwd = (end_of_loop as i32) - (je_operand_off as i32 + 4);
-        sc[je_operand_off..je_operand_off + 4].copy_from_slice(&rel_fwd.to_le_bytes());
-    }
-
-    sc.extend_from_slice(&[0x48, 0x8B, 0xCE]);
-    sc.extend_from_slice(&[0xBA, 0x01, 0x00, 0x00, 0x00]);
-    sc.extend_from_slice(&[0x41, 0xB8, 0x01, 0x00, 0x00, 0x00]);
-    sc.extend_from_slice(&[0x48, 0xB8]);
-    sc.extend_from_slice(&entry_point.to_le_bytes());
-    sc.extend_from_slice(&[0xFF, 0xD0]);
-
-    sc.extend_from_slice(&[0xC7, 0x07, 0x69, 0x00, 0x00, 0x00]);
-
-    sc.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]);
-    sc.extend_from_slice(&[0x5F, 0x5E, 0x5B]);
-    sc.push(0xC3);
-
-    sc
+    crate::stub::build_entry_point_stub(
+        remote_base,
+        entry_point,
+        signal_addr,
+        patches.exception_functions_addr,
+        patches.exception_functions_count,
+        patches.rtl_add_function_table_remote,
+        patches.tls_callbacks_addr,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -726,22 +670,12 @@ fn build_shellcode_load_library(
     result_remote: u64,
     signal_remote: u64,
 ) -> Vec<u8> {
-    let mut shellcode = Vec::with_capacity(64);
-    shellcode.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
-    shellcode.extend_from_slice(&[0x48, 0xB9]);
-    shellcode.extend_from_slice(&name_remote.to_le_bytes());
-    shellcode.extend_from_slice(&[0x48, 0xB8]);
-    shellcode.extend_from_slice(&loadlibraryw_remote.to_le_bytes());
-    shellcode.extend_from_slice(&[0xFF, 0xD0]);
-    shellcode.extend_from_slice(&[0x49, 0xBB]);
-    shellcode.extend_from_slice(&result_remote.to_le_bytes());
-    shellcode.extend_from_slice(&[0x49, 0x89, 0x03]);
-    shellcode.extend_from_slice(&[0x49, 0xBB]);
-    shellcode.extend_from_slice(&signal_remote.to_le_bytes());
-    shellcode.extend_from_slice(&[0x41, 0xC7, 0x03, 0x69, 0x00, 0x00, 0x00]);
-    shellcode.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]);
-    shellcode.extend_from_slice(&[0xC3]);
-    shellcode
+    crate::stub::build_load_library_stub(
+        name_remote,
+        loadlibraryw_remote,
+        result_remote,
+        signal_remote,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -812,20 +746,9 @@ fn execute_shellcode_via_hook(
     Ok(())
 }
 #[cfg(target_os = "windows")]
-const MANUAL_MAP_STUB: &[u8] = &[
-    0x40, 0x56, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x4C, 0x8B, 0x79, 0x08, 0x4C, 0x8B,
-    0xF1, 0x48, 0x8B, 0x31, 0x41, 0x83, 0xBF, 0x94, 0x00, 0x00, 0x00, 0x00, 0x74, 0x7C, 0x48, 0x89,
-    0x7C, 0x24, 0x50, 0x41, 0x8B, 0xBF, 0x90, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC7, 0x0C, 0x48, 0x03,
-    0xFE, 0x8B, 0x07, 0x85, 0xC0, 0x74, 0x5E, 0x48, 0x89, 0x5C, 0x24, 0x40, 0x48, 0x89, 0x6C, 0x24,
-    0x48, 0x8B, 0xC8, 0x49, 0x8B, 0x46, 0x10, 0x48, 0x03, 0xCE, 0xFF, 0xD0, 0x8B, 0x5F, 0x04, 0x48,
-    0x8B, 0xE8, 0x48, 0x03, 0xDE, 0x48, 0x8B, 0x0B, 0x48, 0x85, 0xC9, 0x74, 0x23, 0x0F, 0x1F, 0x00,
-    0x4D, 0x8B, 0x46, 0x18, 0x48, 0x8D, 0x56, 0x02, 0x48, 0x03, 0xD1, 0x48, 0x8B, 0xCD, 0x41, 0xFF,
-    0xD0, 0x48, 0x89, 0x03, 0x48, 0x8D, 0x5B, 0x08, 0x48, 0x8B, 0x0B, 0x48, 0x85, 0xC9, 0x75, 0xE0,
-    0x8B, 0x47, 0x14, 0x48, 0x83, 0xC7, 0x14, 0x85, 0xC0, 0x75, 0xB6, 0x48, 0x8B, 0x6C, 0x24, 0x48,
-    0x48, 0x8B, 0x5C, 0x24, 0x40, 0x48, 0x8B, 0x7C, 0x24, 0x50, 0x41, 0x8B, 0x47, 0x28, 0x45, 0x33,
-    0xC0, 0x48, 0x03, 0xC6, 0xBA, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8B, 0xCE, 0xFF, 0xD0, 0x33, 0xC0,
-    0x48, 0x83, 0xC4, 0x20, 0x41, 0x5F, 0x41, 0x5E, 0x5E, 0xC3,
-];
+fn manual_map_stub() -> Vec<u8> {
+    crate::stub::manual_map_stub()
+}
 
 #[cfg(target_os = "windows")]
 type RemoteAlloc = (usize, bool);
@@ -1012,11 +935,9 @@ pub fn manual_map_usermode(pid: u32, dll_path: &str) -> Result<(), InjectError> 
         );
     }
 
-    if !image_rwx {
-        if let Err(e) = protect_remote_rwx(h_process, remote_base, size_of_image) {
-            unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
-            return Err(e);
-        }
+    if !image_rwx && let Err(e) = protect_remote_rwx(h_process, remote_base, size_of_image) {
+        unsafe { VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE) };
+        return Err(e);
     }
 
     let load_library_a = unsafe {
@@ -1085,12 +1006,13 @@ pub fn manual_map_usermode(pid: u32, dll_path: &str) -> Result<(), InjectError> 
             return Err(InjectError::AllocateShellcodeFailed);
         }
     };
+    let stub = manual_map_stub();
     let ok = unsafe {
         WriteProcessMemory(
             h_process,
             stub_remote as *const _,
-            MANUAL_MAP_STUB.as_ptr() as *const _,
-            MANUAL_MAP_STUB.len(),
+            stub.as_ptr() as *const _,
+            stub.len(),
             &mut done,
         )
     };
@@ -1102,15 +1024,13 @@ pub fn manual_map_usermode(pid: u32, dll_path: &str) -> Result<(), InjectError> 
         }
         return Err(InjectError::WriteShellcodeFailed);
     }
-    if !stub_rwx {
-        if let Err(e) = protect_remote_rwx(h_process, stub_remote, 0x1000) {
-            unsafe {
-                VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
-                VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
-                VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
-            }
-            return Err(e);
+    if !stub_rwx && let Err(e) = protect_remote_rwx(h_process, stub_remote, 0x1000) {
+        unsafe {
+            VirtualFreeEx(h_process, stub_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, param_remote as *mut _, 0, MEM_RELEASE);
+            VirtualFreeEx(h_process, remote_base as *mut _, 0, MEM_RELEASE);
         }
+        return Err(e);
     }
 
     let h_thread = unsafe {

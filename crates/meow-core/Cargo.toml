@@ -23,7 +23,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_Accessibility",
 ] }
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 log = "0.4.34"
 obfstr = "0.4.6"
 pelite = "0.10.0"
+dynasmrt = "5.1.0"
